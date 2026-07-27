@@ -358,6 +358,15 @@ function createPanel() {
   verdictListEl    = panel.querySelector('#rtfc-verdicts');
   summaryEl        = panel.querySelector('#rtfc-summary');
 
+  // The footer starts with the plain version and gets the β suffix (unsigned build)
+  // from the background, which is the only context that can read installType.
+  const footerEl = panel.querySelector('#rtfc-footer');
+  if (footerEl) {
+    browser.runtime.sendMessage({ type: 'GET_VERSION_LABEL' })
+      .then(res => { if (res && res.label) footerEl.textContent = 'NewsPal ' + res.label; })
+      .catch(() => {});
+  }
+
   panel.querySelector('#rtfc-close').addEventListener('click', () => requestCloseSession());
 
   panel.querySelector('#rtfc-export').addEventListener('click', () => exportPDF());

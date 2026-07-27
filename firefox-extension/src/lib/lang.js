@@ -55,6 +55,22 @@ function defaultUnderstoodLanguages(uiLang) {
 const PROVIDER_LABELS = { groq: 'Groq', cerebras: 'Cerebras', mistral: 'Mistral', gemini: 'Gemini', claude: 'Claude' };
 function providerLabel(id) { return PROVIDER_LABELS[id] || (id ? String(id) : ''); }
 
+// Version shown in the popup header and the panel footer. The manifest carries the
+// version we are heading to, so an add-on loaded temporarily from disk (about:debugging)
+// is that release BEFORE it was signed — marked with a β. A real install shows the plain
+// number. Nothing to remember: the β follows how the add-on is installed.
+// management.getSelf() needs no permission, but it is NOT available to content scripts —
+// the overlay asks the background for this label (GET_VERSION_LABEL).
+async function versionLabel() {
+  const v = 'v' + browser.runtime.getManifest().version;
+  try {
+    const info = await browser.management.getSelf();
+    return (info && info.installType === 'development') ? v + 'β' : v;
+  } catch {
+    return v;
+  }
+}
+
 // ── Prompt fragments (the prompts themselves stay in English) ────────────────
 
 const PROMPT_LANG = {

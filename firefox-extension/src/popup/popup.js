@@ -92,9 +92,10 @@ function switchUiLang(lang) {
 uiLangEsBtn.addEventListener('click', () => switchUiLang('es'));
 uiLangEnBtn.addEventListener('click', () => switchUiLang('en'));
 
-// Show the installed version in the header (from the manifest, so it updates itself).
+// Show the installed version in the header (from the manifest, so it updates itself),
+// with a β while the add-on is running unsigned from disk.
 const popupVersionEl = document.getElementById('popupVersion');
-if (popupVersionEl) popupVersionEl.textContent = 'v' + browser.runtime.getManifest().version;
+if (popupVersionEl) versionLabel().then(label => { popupVersionEl.textContent = label; });
 
 // ── Provider fallback chain (reorderable queue) ───────────────────────────────
 

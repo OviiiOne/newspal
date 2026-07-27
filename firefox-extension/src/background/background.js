@@ -1155,6 +1155,11 @@ browser.runtime.onMessage.addListener((msg, sender) => {
 
     case 'GET_STATUS':
       return Promise.resolve({ isCapturing });
+
+    // Content scripts have no access to browser.management, so the panel footer asks
+    // us for its version label (see versionLabel() in lang.js).
+    case 'GET_VERSION_LABEL':
+      return versionLabel().then(label => ({ label }));
   }
 });
 
