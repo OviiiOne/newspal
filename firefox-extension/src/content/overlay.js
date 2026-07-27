@@ -817,9 +817,11 @@ function buildKeyPointCard(kp) {
 
   const rawSpeaker = (kp.speaker && !String(kp.speaker).match(/^Speaker\s*\d+$/i)) ? kp.speaker : null;
   const speakerName = rawSpeaker ? normalizeSpeakerName(rawSpeaker) : null;
+  // The tag is always there, even with no speaker: people introduce themselves mid
+  // conference, so there must be somewhere to click and put a name to a point.
   const speakerTag = speakerName
-    ? '<div class="rtfc-speaker-tag" style="background:' + getSpeakerColor(speakerName) + '">' + escapeHtml(speakerName) + '</div>'
-    : '';
+    ? '<div class="rtfc-speaker-tag" style="background:' + getSpeakerColor(speakerName) + '" title="' + escapeHtml(t('ov_kp_speaker_edit_title')) + '">' + escapeHtml(speakerName) + '</div>'
+    : '<div class="rtfc-speaker-tag rtfc-speaker-tag--unset" title="' + escapeHtml(t('ov_kp_speaker_set_title')) + '">' + escapeHtml(t('ov_kp_speaker_unset')) + '</div>';
 
   const quoteHTML = kp.quote
     ? '<p class="rtfc-kp-quote">“' + escapeHtml(kp.quote) + '”</p>'
@@ -847,6 +849,9 @@ function buildKeyPointCard(kp) {
       '<button class="rtfc-discard-btn" title="' + escapeHtml(t('ov_discard_title')) + '">👎</button>',
     '</div>',
   ].join('');
+
+  const speakerTagEl = card.querySelector('.rtfc-speaker-tag');
+  if (speakerTagEl) speakerTagEl.addEventListener('click', () => editKeyPointSpeaker(card, kp));
 
   const btn = card.querySelector('.rtfc-verify-btn');
   if (btn && !btn.disabled) btn.addEventListener('click', () => {
@@ -922,6 +927,78 @@ function buildKeyPointCard(kp) {
   });
 
   return card;
+}
+
+// ── Naming a speaker from a key-point card ────────────────────────────────────
+// Someone starts speaking before the user has added them as a participant, so the AI
+// tags the point "Otro" or leaves it blank. Clicking the tag puts a name to it AND
+// registers that name as a participant, so the REST of the session gets attributed
+// properly (the background builds its speaker legend from the participant list).
+
+// Labels the model uses when it can't attribute a point — both languages, since a
+// session can carry points extracted before a language switch.
+function isUnattributedSpeaker(name) {
+  const n = String(name || '').trim().toLowerCase();
+  return !n || n === 'otro' || n === 'other';
+}
+
+function editKeyPointSpeaker(card, kp) {
+  if (!card || card.querySelector('.rtfc-kp-speaker-edit')) return; // already editing
+  const tag = card.querySelector('.rtfc-speaker-tag');
+  if (!tag) return;
+
+  const editor = document.createElement('div');
+  editor.className = 'rtfc-kp-speaker-edit';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'rtfc-kp-speaker-input';
+  input.placeholder = t('ov_kp_speaker_ph');
+  input.value = isUnattributedSpeaker(kp.speaker) ? '' : kp.speaker;
+  const save = document.createElement('button');
+  save.className = 'rtfc-kp-edit-save';
+  save.textContent = t('ov_save');
+  const cancel = document.createElement('button');
+  cancel.className = 'rtfc-kp-edit-cancel';
+  cancel.textContent = t('ov_cancel');
+  editor.appendChild(input);
+  editor.appendChild(save);
+  editor.appendChild(cancel);
+
+  tag.style.display = 'none';
+  tag.insertAdjacentElement('afterend', editor);
+  input.focus();
+  input.select();
+
+  const close = () => { editor.remove(); tag.style.display = ''; };
+  const commit = () => {
+    const name = input.value.trim();
+    if (name) applyKeyPointSpeaker(card, kp, name);
+    close();
+  };
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); commit(); }
+    else if (e.key === 'Escape') { e.preventDefault(); close(); }
+  });
+  save.addEventListener('click', commit);
+  cancel.addEventListener('click', close);
+}
+
+function applyKeyPointSpeaker(card, kp, name) {
+  kp.speaker = name;
+  const tag = card.querySelector('.rtfc-speaker-tag');
+  if (tag) {
+    tag.textContent = name;
+    tag.classList.remove('rtfc-speaker-tag--unset');
+    tag.style.background = getSpeakerColor(name);
+    tag.title = t('ov_kp_speaker_edit_title');
+  }
+  if (typeof updateKeyPointSpeaker === 'function') updateKeyPointSpeaker(kp._id, name);
+  // Only THIS card: two points tagged "Otro" may well be two different people.
+  if (!participantNames.includes(name)) {
+    participantNames.push(name);
+    browser.runtime.sendMessage({ type: 'ADD_PARTICIPANT', name });
+    renderParticipantsBar();
+  }
 }
 
 function addKeyPoint(kp) {

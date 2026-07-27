@@ -834,6 +834,39 @@
   border-radius: 3px 3px 0 0;
   margin-bottom: -1px;
   align-self: flex-start;
+  cursor: pointer;
+}
+
+/* No speaker yet: a discreet slot to click, not a coloured claim about who spoke. */
+.rtfc-speaker-tag--unset {
+  background: transparent;
+  color: #94a3b8;
+  border: 0.5px dashed rgba(255,255,255,0.28);
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+
+.rtfc-speaker-tag--unset:hover { color: #e2e8f0; border-color: rgba(255,255,255,0.5); }
+
+/* Inline editor for naming a key point's speaker */
+.rtfc-kp-speaker-edit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 5px;
+}
+
+.rtfc-kp-speaker-input {
+  flex: 1 1 100%;
+  background: rgba(0,0,0,0.25);
+  color: #f1f5f9;
+  border: 0.5px solid rgba(255,255,255,0.18);
+  border-radius: 6px;
+  font-family: 'Inter', -apple-system, sans-serif;
+  font-size: 12px;
+  padding: 5px 8px;
+  box-sizing: border-box;
 }
 
 /* ── Acoustic features ── */

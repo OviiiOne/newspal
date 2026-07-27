@@ -114,6 +114,15 @@ function updateKeyPointText(id, newText) {
   if (entry && newText && newText.trim()) { entry.point = newText.trim(); persistSession(); }
 }
 
+// The user put a name to a key point's speaker from its card (someone introduced
+// themselves mid conference) — keep the export in sync.
+function updateKeyPointSpeaker(id, name) {
+  const entry = keyPointsLog.find(k => k.id === id);
+  if (!entry || !name) return;
+  entry.speaker = name;
+  persistSession();
+}
+
 function updateKeyPointVerdict(id, result) {
   const entry = keyPointsLog.find(k => k.id === id);
   if (!entry || !result) return;

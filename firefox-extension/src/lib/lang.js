@@ -226,6 +226,10 @@ const I18N = {
     ov_close_export: '↓ Exportar y cerrar',
     ov_close_discard: 'Cerrar sin guardar',
     ov_close_summarizing: 'Generando el resumen… se exportará al terminar.',
+    ov_kp_speaker_unset: '+ ¿quién?',
+    ov_kp_speaker_edit_title: 'Cambiar el hablante (se añadirá a participantes)',
+    ov_kp_speaker_set_title: 'Poner nombre al hablante (se añadirá a participantes)',
+    ov_kp_speaker_ph: 'Nombre del hablante',
     // Audio capture
     ac_perm_denied: 'Permiso de audio denegado. Permite la entrada de audio para esta página.',
     ac_capture_fail: 'Fallo al capturar audio: ',
@@ -351,6 +355,10 @@ const I18N = {
     ov_close_export: '↓ Export and close',
     ov_close_discard: 'Close without saving',
     ov_close_summarizing: 'Generating the summary… it will be exported when done.',
+    ov_kp_speaker_unset: '+ who?',
+    ov_kp_speaker_edit_title: 'Change the speaker (added to participants)',
+    ov_kp_speaker_set_title: 'Name the speaker (added to participants)',
+    ov_kp_speaker_ph: 'Speaker name',
     // Audio capture
     ac_perm_denied: 'Audio permission denied. Allow audio input for this page.',
     ac_capture_fail: 'Audio capture failed: ',
