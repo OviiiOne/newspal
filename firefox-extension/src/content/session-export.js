@@ -143,6 +143,12 @@ function buildSummaryInput() {
 
 function setSummary(text) { sessionSummary = text || ''; persistSession(); }
 
+// Is there anything worth saving? Used by the ✕ guard: an empty session closes without
+// asking, one with content offers to export first.
+function sessionHasContent() {
+  return !!(sessionLog.length || transcriptLog.length || keyPointsLog.length || sessionSummary);
+}
+
 // Apply a participant rename to everything logged so the export stays consistent.
 function updateSpeakerName(oldName, newName) {
   keyPointsLog.forEach(k => { if (k.speaker === oldName) k.speaker = newName; });

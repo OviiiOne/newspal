@@ -358,10 +358,7 @@ function createPanel() {
   verdictListEl    = panel.querySelector('#rtfc-verdicts');
   summaryEl        = panel.querySelector('#rtfc-summary');
 
-  panel.querySelector('#rtfc-close').addEventListener('click', () => {
-    browser.runtime.sendMessage({ type: 'STOP_FACTCHECK' });
-    removePanel();
-  });
+  panel.querySelector('#rtfc-close').addEventListener('click', () => requestCloseSession());
 
   panel.querySelector('#rtfc-export').addEventListener('click', () => exportPDF());
   panel.querySelector('#rtfc-summary-btn').addEventListener('click', () => generateSummary());
@@ -403,6 +400,100 @@ function removePanel() {
   lastActiveSpeaker = null;
   Object.keys(confirmedSpeakerMap).forEach(k => delete confirmedSpeakerMap[k]);
   pendingSpeakerIds.clear();
+}
+
+// ── Closing the session ───────────────────────────────────────────────────────
+// The ✕ throws away the whole session (the transcript only lives here), so a stray
+// click used to be unrecoverable. Ask first, and offer to take the work out on the
+// way: export as it is, or generate the summary and export that.
+
+let closeConfirmEl = null;
+let closeAfterSummary = false;   // waiting for SUMMARY_RESULT before exporting+closing
+let closeSummaryTimer = null;
+
+function closeSession() {
+  dismissCloseConfirm();
+  browser.runtime.sendMessage({ type: 'STOP_FACTCHECK' });
+  removePanel();
+}
+
+function requestCloseSession() {
+  // An empty session has nothing to lose — don't nag.
+  if (typeof sessionHasContent === 'function' && !sessionHasContent()) { closeSession(); return; }
+  if (closeConfirmEl) return;
+  showCloseConfirm();
+}
+
+function dismissCloseConfirm() {
+  if (closeSummaryTimer) { clearTimeout(closeSummaryTimer); closeSummaryTimer = null; }
+  closeAfterSummary = false;
+  document.removeEventListener('keydown', onCloseConfirmKey, true);
+  closeConfirmEl?.remove();
+  closeConfirmEl = null;
+}
+
+function onCloseConfirmKey(e) {
+  if (e.key === 'Escape') { e.stopPropagation(); dismissCloseConfirm(); }
+}
+
+function showCloseConfirm() {
+  if (!panel) return;
+  closeConfirmEl = document.createElement('div');
+  closeConfirmEl.className = 'rtfc-confirm';
+  closeConfirmEl.innerHTML = [
+    '<div class="rtfc-confirm-box">',
+      '<p class="rtfc-confirm-title">' + escapeHtml(t('ov_close_title')) + '</p>',
+      '<p class="rtfc-confirm-text">' + escapeHtml(t('ov_close_text')) + '</p>',
+      '<button class="rtfc-confirm-btn rtfc-confirm-primary" data-act="summary">' + escapeHtml(t('ov_close_summary_export')) + '</button>',
+      '<button class="rtfc-confirm-btn" data-act="export">' + escapeHtml(t('ov_close_export')) + '</button>',
+      '<button class="rtfc-confirm-btn rtfc-confirm-danger" data-act="discard">' + escapeHtml(t('ov_close_discard')) + '</button>',
+      '<button class="rtfc-confirm-btn rtfc-confirm-cancel" data-act="cancel">' + escapeHtml(t('ov_cancel')) + '</button>',
+      '<p class="rtfc-confirm-status"></p>',
+    '</div>',
+  ].join('');
+  panel.appendChild(closeConfirmEl);
+
+  // Clicking the dark backdrop is a cancel, like Escape.
+  closeConfirmEl.addEventListener('click', (e) => {
+    if (e.target === closeConfirmEl) dismissCloseConfirm();
+  });
+  document.addEventListener('keydown', onCloseConfirmKey, true);
+
+  closeConfirmEl.querySelectorAll('.rtfc-confirm-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      switch (btn.dataset.act) {
+        case 'cancel':  dismissCloseConfirm(); break;
+        case 'discard': closeSession(); break;
+        case 'export':  exportPDF(); closeSession(); break;
+        case 'summary': startCloseWithSummary(); break;
+      }
+    });
+  });
+}
+
+// Generate the summary first, then export and close. The summary is an AI call, so we
+// wait for SUMMARY_RESULT — and export anyway if it never arrives, rather than trap the
+// user in a dialog with their whole session inside.
+function startCloseWithSummary() {
+  if (!closeConfirmEl) return;
+  const already = (typeof sessionSummary === 'string') ? sessionSummary.trim() : '';
+  if (already) { exportPDF(); closeSession(); return; }
+
+  closeConfirmEl.querySelectorAll('.rtfc-confirm-btn').forEach(b => {
+    if (b.dataset.act !== 'cancel') b.disabled = true;
+  });
+  const status = closeConfirmEl.querySelector('.rtfc-confirm-status');
+  if (status) status.textContent = t('ov_close_summarizing');
+  closeAfterSummary = true;
+  generateSummary();
+  closeSummaryTimer = setTimeout(() => finishCloseWithSummary(), 90000);
+}
+
+function finishCloseWithSummary() {
+  if (!closeAfterSummary) return;
+  closeAfterSummary = false;
+  exportPDF();
+  closeSession();
 }
 
 // ── Transcript ────────────────────────────────────────────────────────────────
@@ -1327,6 +1418,8 @@ browser.runtime.onMessage.addListener((msg) => {
 
     case 'SUMMARY_RESULT':
       renderSummary(msg.text || '');
+      // The user asked to close WITH a summary: it's in the log now, so export and go.
+      if (closeAfterSummary) finishCloseWithSummary();
       break;
 
     case 'NEW_VERDICT':
