@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "NewsPal",
-  "version": "2.3.4",
+  "version": "2.4.0",
   "description": "Press-conference companion: live transcription, translation, neutral key points and on-demand summaries (ES/EN)",
   "homepage_url": "https://github.com/OviiiOne/newspal",
 
