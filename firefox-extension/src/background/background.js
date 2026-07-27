@@ -918,6 +918,13 @@ async function summarizeSession(input) {
 let activeTabId = null;
 let isCapturing = false;
 
+// Identifies the current session. It travels with START_FACTCHECK so the content
+// script can tell "brand-new session" from "same session, the page just reloaded"
+// and restore its saved transcript instead of starting blank (see SESSION_BACKUP_KEY
+// in session-export.js).
+let sessionId = null;
+const SESSION_BACKUP_KEY = 'sessionBackup';
+
 // With all_frames the content scripts run in every frame (so we can reach players
 // inside cross-origin iframes, e.g. Vimeo embeds). Only ONE frame may capture audio:
 // frames that find a media element ask for this slot and the first one wins.
@@ -1168,11 +1175,12 @@ async function startFactCheck() {
   activeTabId = tabs[0].id;
 
   isCapturing = true;
+  sessionId = Date.now();
   resetWindow();
   recentClaims.clear();
   captureClaimedBy = null;
 
-  await sendToTab(activeTabId, { type: 'START_FACTCHECK' });
+  await sendToTab(activeTabId, { type: 'START_FACTCHECK', sessionId, resume: false });
   return { ok: true };
 }
 
@@ -1187,6 +1195,50 @@ function stopFactCheck() {
 
   if (activeTabId) sendToTab(activeTabId, { type: 'STOP_FACTCHECK' });
 
+  // Drop the saved session: it only exists to survive a reload of a LIVE session.
+  browser.storage.local.remove(SESSION_BACKUP_KEY).catch(() => {});
+
   activeTabId = null;
+  sessionId = null;
   isCapturing = false;
+}
+
+// ── Surviving a page reload ───────────────────────────────────────────────────
+// A reload (or a navigation) destroys everything that lives inside the page: the
+// panel, the audio capture and the Gladia socket. This background script survives,
+// so until now it kept reporting "active" while the user had no panel on screen and
+// no transcription at all. Now it notices the reload and restarts the tab with the
+// SAME sessionId, so the panel comes back with its transcript instead of blank.
+
+let resumePending = false;
+
+browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (!isCapturing || tabId !== activeTabId) return;
+  if (changeInfo.status !== 'complete') return;
+  resumeInTab();
+});
+
+// If the captured tab is closed there is nothing to come back to — stop for real, so
+// the popup never claims to be active with no session behind it.
+browser.tabs.onRemoved.addListener((tabId) => {
+  if (isCapturing && tabId === activeTabId) stopFactCheck();
+});
+
+async function resumeInTab() {
+  if (resumePending || !activeTabId) return;
+  resumePending = true;
+  captureClaimedBy = null; // the frames elect again who captures the audio
+  const tabId = activeTabId;
+  // The content scripts may still be booting, so retry briefly before giving up.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await browser.tabs.sendMessage(tabId, { type: 'START_FACTCHECK', sessionId, resume: true });
+      resumePending = false;
+      return;
+    } catch {
+      await new Promise(r => setTimeout(r, 700));
+    }
+  }
+  resumePending = false;
+  console.warn('[background] could not resume the session after the page reload');
 }

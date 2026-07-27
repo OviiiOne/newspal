@@ -203,6 +203,7 @@ const I18N = {
     ov_nothing_to_summarize: 'Aún no hay contenido para resumir.',
     ov_resize_title: 'Arrastra para redimensionar',
     ov_pipeline_error: 'Se produjo un error en el procesamiento.',
+    ov_session_resumed: 'Sesión recuperada tras recargar la página.',
     // Audio capture
     ac_perm_denied: 'Permiso de audio denegado. Permite la entrada de audio para esta página.',
     ac_capture_fail: 'Fallo al capturar audio: ',
@@ -321,6 +322,7 @@ const I18N = {
     ov_nothing_to_summarize: 'Nothing to summarize yet.',
     ov_resize_title: 'Drag to resize',
     ov_pipeline_error: 'A processing error occurred.',
+    ov_session_resumed: 'Session recovered after the page reload.',
     // Audio capture
     ac_perm_denied: 'Audio permission denied. Allow audio input for this page.',
     ac_capture_fail: 'Audio capture failed: ',

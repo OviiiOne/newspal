@@ -10,6 +10,57 @@ const keyPointsLog = [];
 let sessionSummary = '';
 let sessionStartTime = null;
 
+// ── Surviving a page reload ───────────────────────────────────────────────────
+// These arrays live in the PAGE, so a reload wipes them and the whole session is
+// lost. A mirror copy is kept in browser.storage.local (which the reload doesn't
+// touch): background.js re-sends START_FACTCHECK with the same sessionId and
+// restoreSession() brings everything back.
+const SESSION_BACKUP_KEY = 'sessionBackup';
+let sessionId = null;
+let persistTimer = null;
+
+// Batched on purpose: a live transcript fires several times per second and every
+// write serialises the whole session.
+function persistSession() {
+  if (sessionId === null || persistTimer) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    if (sessionId === null) return;
+    browser.storage.local.set({
+      [SESSION_BACKUP_KEY]: {
+        sessionId,
+        startTime: sessionStartTime,
+        sessionLog,
+        transcriptLog,
+        keyPointsLog,
+        summary: sessionSummary,
+      },
+    }).catch(() => {});
+  }, 1500);
+}
+
+// Returns the recovered session (so the panel can re-render it) or null when the
+// backup belongs to a different session — never restore someone else's transcript.
+async function restoreSession(id) {
+  let stored = null;
+  try {
+    stored = (await browser.storage.local.get(SESSION_BACKUP_KEY))[SESSION_BACKUP_KEY];
+  } catch { return null; }
+  if (!stored || stored.sessionId !== id) return null;
+
+  sessionId = id;
+  sessionStartTime = stored.startTime || Date.now();
+  sessionSummary = stored.summary || '';
+  sessionLog.length = 0;
+  transcriptLog.length = 0;
+  keyPointsLog.length = 0;
+  (stored.sessionLog   || []).forEach(x => sessionLog.push(x));
+  (stored.transcriptLog || []).forEach(x => transcriptLog.push(x));
+  (stored.keyPointsLog  || []).forEach(x => keyPointsLog.push(x));
+
+  return { transcript: transcriptLog, keyPoints: keyPointsLog, summary: sessionSummary };
+}
+
 function logVerdict(result) {
   sessionLog.push({
     timestamp: new Date().toISOString(),
@@ -24,17 +75,20 @@ function logVerdict(result) {
     speakerName: result.speaker || null,
     sources: result.sources ?? [],
   });
+  persistSession();
 }
 
 // Full session transcript, each line tagged with its clock timecode HH:MM:SS:FF.
 function logTranscript(timecode, text, translation, speaker) {
   transcriptLog.push({ timecode, text, translation: translation || '', speaker: speaker || null });
+  persistSession();
 }
 
 // A marker in the transcript flow: the active LLM model changed (fallback in the queue).
 // `label` is the already-localized text (e.g. "Modelo activo: Cerebras").
 function logModelChange(timecode, label) {
   transcriptLog.push({ timecode: timecode || '', modelChange: label || '' });
+  persistSession();
 }
 
 // Neutral key points extracted live (verdict added later if the user verifies one).
@@ -51,12 +105,13 @@ function logKeyPoint(kp) {
     verdictExplanation: '',
     sources: [],
   });
+  persistSession();
 }
 
 // The user corrected a key point's text (✏️) — keep the export/summary in sync.
 function updateKeyPointText(id, newText) {
   const entry = keyPointsLog.find(k => k.id === id);
-  if (entry && newText && newText.trim()) entry.point = newText.trim();
+  if (entry && newText && newText.trim()) { entry.point = newText.trim(); persistSession(); }
 }
 
 function updateKeyPointVerdict(id, result) {
@@ -66,6 +121,7 @@ function updateKeyPointVerdict(id, result) {
   entry.confidence = result.confidence || '';
   entry.verdictExplanation = result.explanation || '';
   entry.sources = result.sources || [];
+  persistSession();
 }
 
 // Compact input for the final summary: prefer the curated key points; fall back to
@@ -85,24 +141,32 @@ function buildSummaryInput() {
   return t('ex_title_label') + ' ' + title + '\n\n' + t('ex_tr_label') + '\n' + tr.slice(0, 8000);
 }
 
-function setSummary(text) { sessionSummary = text || ''; }
+function setSummary(text) { sessionSummary = text || ''; persistSession(); }
 
 // Apply a participant rename to everything logged so the export stays consistent.
 function updateSpeakerName(oldName, newName) {
   keyPointsLog.forEach(k => { if (k.speaker === oldName) k.speaker = newName; });
   transcriptLog.forEach(t => { if (t.speaker === oldName) t.speaker = newName; });
+  persistSession();
 }
 
-function startSession() {
+// `id` comes from background.js and identifies this session across page reloads.
+function startSession(id) {
   sessionLog.length = 0;
   transcriptLog.length = 0;
   keyPointsLog.length = 0;
   sessionSummary = '';
   sessionStartTime = Date.now();
+  sessionId = (id === undefined || id === null) ? Date.now() : id;
+  persistSession();
 }
 
 function stopSession() {
   sessionStartTime = null;
+  // Cancel the pending write BEFORE clearing the id, or it would rewrite the backup
+  // that background.js is deleting at this very moment.
+  if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; }
+  sessionId = null;
 }
 
 function exportPDF() {

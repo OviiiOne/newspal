@@ -836,6 +836,51 @@ function addKeyPoint(kp) {
   if (typeof logKeyPoint === 'function') logKeyPoint(kp);
 }
 
+// Re-paint a session recovered after a page reload (see restoreSession in
+// session-export.js): transcript lines and model markers in their original order,
+// then the key-point cards oldest-first (buildKeyPointCard is prepended, like
+// addKeyPoint does), then the summary. NOTHING here logs anything — the restored log
+// IS the source, and re-logging would duplicate the whole session in the export.
+function renderRestoredSession(data) {
+  lastTranscriptSpeaker = null;
+
+  (data.transcript || []).forEach(entry => {
+    if (entry.modelChange) { addModelMarker(entry.modelChange); return; }
+    addTranscriptLine(entry.timecode, entry.text, entry.translation, entry.speaker);
+    if (entry.timecode) lastTranscriptTimestamp = entry.timecode;
+    sentenceTimestamps.push({ text: entry.text, timestamp: entry.timecode || '' });
+  });
+  // Keep only the newest lines, same cap the live path applies.
+  while (sentenceTimestamps.length > MAX_TIMESTAMP_BUFFER) sentenceTimestamps.shift();
+  if (transcriptFeedEl) transcriptFeedEl.scrollTop = transcriptFeedEl.scrollHeight;
+
+  (data.keyPoints || []).forEach(entry => {
+    // Reuse the stored id so later edits/verdicts still match the export entry.
+    if (typeof entry.id === 'number' && entry.id > kpCounter) kpCounter = entry.id;
+    const kp = {
+      _id: entry.id,
+      _timestamp: entry.timecode || '',
+      category: entry.category,
+      point: entry.point,
+      quote: entry.quote || '',
+      speaker: entry.speaker || null,
+      model: entry.model || '',
+    };
+    verdictListEl?.querySelector('.rtfc-empty')?.remove();
+    verdictListEl?.prepend(buildKeyPointCard(kp));
+    if (entry.verdict) {
+      applyKeyPointVerdict(entry.id, {
+        verdict: entry.verdict,
+        confidence: entry.confidence || '',
+        explanation: entry.verdictExplanation || '',
+        sources: entry.sources || [],
+      });
+    }
+  });
+
+  if (data.summary) renderSummary(data.summary);
+}
+
 function applyKeyPointVerdict(id, result) {
   const card = kpCards.get(id);
   if (!card) return;
@@ -1172,15 +1217,29 @@ browser.runtime.onMessage.addListener((msg) => {
   console.log('[overlay] message received:', msg.type);
   switch (msg.type) {
 
-    case 'START_FACTCHECK':
+    case 'START_FACTCHECK': {
+      // msg.resume = the page was reloaded and the background is restarting the SAME
+      // session. If the panel is still alive nothing was destroyed (e.g. an in-page
+      // navigation), so there is nothing to rebuild — leaving it alone also avoids
+      // starting a second audio capture on top of the running one.
+      const isResume = !!msg.resume;
+      if (isResume && panel) break;
       // Resolve the UI language BEFORE building the panel so every string is right.
-      browser.storage.local.get(['participants', 'uiLanguage']).then(d => {
+      browser.storage.local.get(['participants', 'uiLanguage']).then(async d => {
         setUiLang(d.uiLanguage || defaultUiLanguage());
         createPanel();
         setDotState('connecting');
         participantNames = (d.participants || '').split(',').map(s => s.trim()).filter(Boolean);
         renderParticipantsBar();
-        startSession();
+        const restored = (isResume && typeof restoreSession === 'function')
+          ? await restoreSession(msg.sessionId)
+          : null;
+        if (restored) {
+          renderRestoredSession(restored);
+          showError(t('ov_session_resumed'), 'info');
+        } else {
+          startSession(msg.sessionId);
+        }
         speakers = parseSpeakersFromTitle(document.title || '');
         speakerColorMap.clear();
         browser.runtime.sendMessage({
@@ -1196,6 +1255,7 @@ browser.runtime.onMessage.addListener((msg) => {
         if (typeof startAudioCapture === 'function') startAudioCapture();
       });
       break;
+    }
 
     case 'STOP_FACTCHECK':
       stopSession();
