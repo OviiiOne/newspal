@@ -12,6 +12,7 @@ let mediaStream = null;
 let audioContext = null;
 let socket = null;
 let captureActive = false;
+let pendingStart = false; // start in progress (may be waiting for the page's player)
 let usedPageMediaCapture = false; // capturing the page's own <video>/<audio> (vs a device)
 let utteranceBuffer = '';
 let gladiaKey = '';
@@ -86,6 +87,30 @@ function waitForCaptureClaim(ms) {
   });
 }
 
+// A resume lands right after the page reloaded, when the player is usually not mounted
+// yet and the video is paused. Grabbing nothing there used to fall through to the
+// microphone fallback, which popped a permission prompt and would have captured the
+// wrong audio anyway. Wait for the player instead — strictly (playing and unmuted), so
+// a leftover paused element doesn't get captured as silence.
+const RESUME_MEDIA_WAIT_MS = 300000; // 5 min: he may take a while to hit play again
+
+async function waitForPageMedia(timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let claimed = false;
+  const previousNotify = captureClaimNotify;
+  captureClaimNotify = () => { claimed = true; };
+  try {
+    while (Date.now() < deadline && pendingStart && !claimed) {
+      const stream = getPageMediaStream(true);
+      if (stream) return { stream, claimed: false };
+      await new Promise(r => setTimeout(r, 500));
+    }
+  } finally {
+    captureClaimNotify = previousNotify;
+  }
+  return { stream: null, claimed };
+}
+
 async function claimCaptureSlot() {
   try {
     const resp = await browser.runtime.sendMessage({ type: 'CLAIM_CAPTURE' });
@@ -98,8 +123,15 @@ async function claimCaptureSlot() {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
-async function startAudioCapture() {
-  if (captureActive) return;
+async function startAudioCapture(opts) {
+  if (captureActive || pendingStart) return;
+  pendingStart = true;
+
+  // Resuming after a page reload; captureMode is how the session captured audio BEFORE
+  // the reload (the background remembers it), so a device-based session doesn't sit
+  // waiting for a player that was never being used.
+  const resuming = !!(opts && opts.resume);
+  const previousMode = (opts && opts.captureMode) || null;
 
   const data = await browser.storage.local.get(['gladiaKey', 'sourceLanguage', 'proxyUrl', 'connectionMode', 'proxyToken', 'uiLanguage']);
   gladiaKey = data.gladiaKey || '';
@@ -119,7 +151,28 @@ async function startAudioCapture() {
   //    no mic, no OS setup. With all_frames this also runs inside cross-origin
   //    iframes (Vimeo embeds), so whichever frame has the player captures it.
   // 2) Fallback (top frame only): a system-audio INPUT device (loopback).
-  mediaStream = getPageMediaStream(!IS_TOP_FRAME);
+  // Strict on a resume even in the top frame: right after a reload the <video> often
+  // exists but is paused, and the loose match would happily capture it — silence for the
+  // rest of the session. Better to find nothing and wait for play.
+  mediaStream = getPageMediaStream(!IS_TOP_FRAME || resuming);
+
+  // The page has just reloaded: the player usually needs a few seconds to mount and the
+  // video is paused until the user hits play. Wait for it rather than prompting for a
+  // microphone. Skipped when the session was capturing from a device anyway.
+  if (!mediaStream && resuming && previousMode !== 'device') {
+    browser.runtime.sendMessage({ type: 'PIPELINE_INFO', message: t('ac_waiting_player') });
+    const waited = await waitForPageMedia(RESUME_MEDIA_WAIT_MS);
+    mediaStream = waited.stream;
+    if (!mediaStream) {
+      // Another frame took the slot, or the video never came back.
+      if (!waited.claimed) {
+        browser.runtime.sendMessage({ type: 'PIPELINE_ERROR', message: t('ac_player_gone') });
+      }
+      pendingStart = false;
+      return;
+    }
+  }
+
   const usedPageMedia = !!mediaStream;
   usedPageMediaCapture = usedPageMedia;
 
@@ -128,15 +181,16 @@ async function startAudioCapture() {
     if (!(await claimCaptureSlot())) {
       mediaStream.getTracks().forEach(t => t.stop());
       mediaStream = null;
+      pendingStart = false;
       return;
     }
   } else {
     // Iframes never fall back to an input device; that choice belongs to the top frame.
-    if (!IS_TOP_FRAME) return;
+    if (!IS_TOP_FRAME) { pendingStart = false; return; }
 
     // Give iframes a moment to find their player and claim the slot.
-    if (await waitForCaptureClaim(2500)) return;
-    if (!(await claimCaptureSlot())) return;
+    if (await waitForCaptureClaim(2500)) { pendingStart = false; return; }
+    if (!(await claimCaptureSlot())) { pendingStart = false; return; }
 
     try {
       mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -151,6 +205,7 @@ async function startAudioCapture() {
           ? t('ac_perm_denied')
           : t('ac_capture_fail') + err.message,
       });
+      pendingStart = false;
       return;
     }
   }
@@ -161,11 +216,16 @@ async function startAudioCapture() {
       type: 'PIPELINE_ERROR',
       message: t('ac_no_audio'),
     });
+    pendingStart = false;
     stopAudioCapture();
     return;
   }
 
   captureActive = true;
+  pendingStart = false;
+  // Tell the background how we captured, so a resume after a reload doesn't wait for a
+  // player when the session was running off an audio device.
+  browser.runtime.sendMessage({ type: 'CAPTURE_MODE', mode: usedPageMedia ? 'page' : 'device' });
 
   const src = usedPageMedia ? t('ac_src_video') : t('ac_src_device');
   const eng = gladiaProxyUrl ? t('ac_gladia_proxy')
@@ -599,6 +659,7 @@ async function processWhisperChunks() {
 
 function stopAudioCapture() {
   captureActive = false;
+  pendingStart = false; // also breaks a waitForPageMedia loop still running
   utteranceBuffer = '';
   transcriptionMode = 'none';
 

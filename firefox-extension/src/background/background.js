@@ -929,6 +929,7 @@ const SESSION_BACKUP_KEY = 'sessionBackup';
 // inside cross-origin iframes, e.g. Vimeo embeds). Only ONE frame may capture audio:
 // frames that find a media element ask for this slot and the first one wins.
 let captureClaimedBy = null; // frameId of the frame that captures, or null
+let captureMode = null;      // 'page' | 'device' — reported by the capturing frame
 
 function sendToTab(tabId, msg) {
   browser.tabs.sendMessage(tabId, msg).catch(() => {});
@@ -1073,6 +1074,13 @@ browser.runtime.onMessage.addListener((msg, sender) => {
       if (activeTabId) sendToTab(activeTabId, { type: 'PIPELINE_INFO', message: msg.message });
       return Promise.resolve();
 
+    // How the page ended up capturing audio ('page' | 'device'). Kept here because the
+    // background outlives the reload: on resume the content script needs to know whether
+    // to wait for the player or go straight back to the audio device.
+    case 'CAPTURE_MODE':
+      captureMode = msg.mode === 'device' ? 'device' : 'page';
+      return Promise.resolve();
+
     case 'CAPTURE_READY':
       if (activeTabId) sendToTab(activeTabId, { type: 'CAPTURE_READY' });
       return Promise.resolve();
@@ -1184,6 +1192,7 @@ async function startFactCheck() {
   resetWindow();
   recentClaims.clear();
   captureClaimedBy = null;
+  captureMode = null;
 
   await sendToTab(activeTabId, { type: 'START_FACTCHECK', sessionId, resume: false });
   return { ok: true };
@@ -1237,7 +1246,7 @@ async function resumeInTab() {
   // The content scripts may still be booting, so retry briefly before giving up.
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      await browser.tabs.sendMessage(tabId, { type: 'START_FACTCHECK', sessionId, resume: true });
+      await browser.tabs.sendMessage(tabId, { type: 'START_FACTCHECK', sessionId, resume: true, captureMode });
       resumePending = false;
       return;
     } catch {
