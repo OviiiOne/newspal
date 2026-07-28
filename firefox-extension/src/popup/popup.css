@@ -138,6 +138,13 @@ body {
 .provider-move:hover:not(:disabled) { background: rgba(255,255,255,0.14); }
 .provider-move:disabled { opacity: 0.3; cursor: default; }
 
+/* Search box above the 99-language picker */
+.lang-search { margin-bottom: 5px; }
+.lang-search.no-match {
+  border-color: #f87171;
+  color: #fca5a5;
+}
+
 .provider-chain-hint,
 .source-lang-hint {
   font-size: 9px;

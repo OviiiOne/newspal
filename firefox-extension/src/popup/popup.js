@@ -47,6 +47,52 @@ function applyI18n() {
   setActive(isActive); // refresh status + toggle-button texts
 }
 
+// ── Source-language picker ────────────────────────────────────────────────────
+// Gladia transcribes 99 languages, which is far too many for a plain dropdown, so the
+// list is filtered by a search box: type a name (in either language, accents optional)
+// or the code. Only matches are listed, and the first one is selected as you type, so
+// the setting can never end up empty.
+
+const sourceSearchEl = document.getElementById('sourceLanguageSearch');
+
+// 'auto' always leads; the rest are sorted by their name in the current UI language.
+function sourceLanguageCodes(query) {
+  const q = normalizeSearch(query);
+  const codes = GLADIA_LANGUAGES
+    .filter(c => languageMatches(c, q))
+    .sort((a, b) => languageDisplayName(a).localeCompare(languageDisplayName(b), getUiLang()));
+  const autoMatches = !q || normalizeSearch(t('p_opt_auto')).includes(q) || 'auto'.includes(q);
+  return autoMatches ? ['auto', ...codes] : codes;
+}
+
+function renderSourceLanguageOptions(codes, selected) {
+  sourceLanguageEl.innerHTML = '';
+  for (const code of codes) {
+    const o = document.createElement('option');
+    o.value = code;
+    o.textContent = code === 'auto' ? t('p_opt_auto') : languageOptionLabel(code);
+    sourceLanguageEl.appendChild(o);
+  }
+  sourceLanguageEl.value = selected;
+  // Nothing matched the stored code (it was filtered out): fall back to the first result.
+  if (!sourceLanguageEl.value && codes.length) sourceLanguageEl.value = codes[0];
+}
+
+if (sourceSearchEl) {
+  sourceSearchEl.addEventListener('input', () => {
+    const query = sourceSearchEl.value.trim();
+    const codes = sourceLanguageCodes(query);
+    // No matches: leave the current choice alone rather than wiping it.
+    sourceSearchEl.classList.toggle('no-match', !!query && !codes.length);
+    if (!codes.length) return;
+    const keep = codes.includes(sourceLanguageEl.value) ? sourceLanguageEl.value : codes[0];
+    renderSourceLanguageOptions(codes, keep);
+    // Show the results as a list while searching; back to a dropdown when cleared.
+    sourceLanguageEl.size = query ? Math.min(6, Math.max(2, codes.length)) : 1;
+    browser.storage.local.set({ sourceLanguage: sourceLanguageEl.value });
+  });
+}
+
 // Rebuild both language selects with labels in the current UI language,
 // preserving the current selections.
 function buildLanguageSelects(selectedSource, selectedUnderstood) {
@@ -55,18 +101,7 @@ function buildLanguageSelects(selectedSource, selectedUnderstood) {
     ? selectedUnderstood
     : [...understoodEl.selectedOptions].map(o => o.value);
 
-  sourceLanguageEl.innerHTML = '';
-  const auto = document.createElement('option');
-  auto.value = 'auto';
-  auto.textContent = t('p_opt_auto');
-  sourceLanguageEl.appendChild(auto);
-  for (const l of EXT_LANGUAGES) {
-    const o = document.createElement('option');
-    o.value = l.code;
-    o.textContent = l[getUiLang()] || l.en;
-    sourceLanguageEl.appendChild(o);
-  }
-  sourceLanguageEl.value = source;
+  renderSourceLanguageOptions(sourceLanguageCodes(''), source);
 
   understoodEl.innerHTML = '';
   for (const l of EXT_LANGUAGES) {
@@ -216,6 +251,13 @@ browser.storage.local.get(['anthropicKey', 'proxyUrl', 'proxyToken', 'gladiaKey'
 
 sourceLanguageEl.addEventListener('change', () => {
   browser.storage.local.set({ sourceLanguage: sourceLanguageEl.value });
+  // Picking from the results closes the search: back to the full dropdown.
+  if (sourceSearchEl && sourceSearchEl.value) {
+    sourceSearchEl.value = '';
+    sourceSearchEl.classList.remove('no-match');
+    renderSourceLanguageOptions(sourceLanguageCodes(''), sourceLanguageEl.value);
+    sourceLanguageEl.size = 1;
+  }
 });
 
 understoodEl.addEventListener('change', () => {

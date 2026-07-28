@@ -45,6 +45,54 @@ function langName(code) {
   return l ? l.name : '';
 }
 
+// Every language Gladia accepts for live transcription (TranscriptionLanguageCodeEnum
+// in the live/init reference). EXT_LANGUAGES above stays as it is: it drives the short
+// "languages I understand" list, which is about the user, not about the provider.
+const GLADIA_LANGUAGES = [
+  'af', 'am', 'ar', 'as', 'az', 'ba', 'be', 'bg', 'bn', 'bo', 'br', 'bs', 'ca', 'cs',
+  'cy', 'da', 'de', 'el', 'en', 'es', 'et', 'eu', 'fa', 'fi', 'fo', 'fr', 'gl', 'gu',
+  'ha', 'haw', 'he', 'hi', 'hr', 'ht', 'hu', 'hy', 'id', 'is', 'it', 'ja', 'jw', 'ka',
+  'kk', 'km', 'kn', 'ko', 'la', 'lb', 'ln', 'lo', 'lt', 'lv', 'mg', 'mi', 'mk', 'ml',
+  'mn', 'mr', 'ms', 'mt', 'my', 'ne', 'nl', 'nn', 'no', 'oc', 'pa', 'pl', 'ps', 'pt',
+  'ro', 'ru', 'sa', 'sd', 'si', 'sk', 'sl', 'sn', 'so', 'sq', 'sr', 'su', 'sv', 'sw',
+  'ta', 'te', 'tg', 'th', 'tk', 'tl', 'tr', 'tt', 'uk', 'ur', 'uz', 'vi', 'yi', 'yo',
+  'zh',
+];
+
+// Language names come from the browser (Intl), so 99 languages don't turn into 198
+// hand-written translations. Falls back to the EXT_LANGUAGES name, then the raw code.
+function languageDisplayName(code, locale) {
+  try {
+    const name = new Intl.DisplayNames([locale || UI_LANG], { type: 'language' }).of(code);
+    if (name && name !== code) return name.charAt(0).toUpperCase() + name.slice(1);
+  } catch { /* unsupported locale/code — fall through */ }
+  return langName(code) || code;
+}
+
+// "Japonés (日本語) · ja" — the name in the user's language, the name in its own
+// language when it differs, and the code, because he may know the code and not the name.
+function languageOptionLabel(code) {
+  const ui = languageDisplayName(code, UI_LANG);
+  const own = languageDisplayName(code, code);
+  return (own && own.toLowerCase() !== ui.toLowerCase() ? ui + ' (' + own + ')' : ui) + ' · ' + code;
+}
+
+// Accent- and case-insensitive, so "japones" finds "Japonés".
+function normalizeSearch(s) {
+  return String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
+
+function languageMatches(code, query) {
+  if (!query) return true;
+  const haystack = normalizeSearch([
+    code,
+    languageDisplayName(code, UI_LANG),
+    languageDisplayName(code, 'en'),
+    languageDisplayName(code, code),
+  ].join(' '));
+  return haystack.includes(query);
+}
+
 // Which languages skip translation when no explicit choice is stored.
 function defaultUnderstoodLanguages(uiLang) {
   return (uiLang || UI_LANG) === 'es' ? ['es', 'en'] : ['en'];
@@ -155,6 +203,8 @@ const I18N = {
     p_lbl_source_lang: 'Idioma de la rueda de prensa',
     p_source_lang_hint: 'El idioma que se HABLA en el vídeo. Ponlo en Automático o en el idioma real; si eliges otro, la transcripción saldrá en ese idioma equivocado.',
     p_opt_auto: 'Detección automática',
+    p_source_lang_search_ph: 'Busca un idioma o su código (ej. japonés, ko)…',
+    p_source_lang_no_match: 'Ningún idioma coincide',
     p_lbl_understood: 'Idiomas que entiendes (no traducir)',
     p_understood_hint: 'Los idiomas marcados solo se transcriben; los demás se traducen. (Ctrl+clic para marcar varios.)',
     p_lbl_participants: 'Participantes',
@@ -286,6 +336,8 @@ const I18N = {
     p_lbl_source_lang: 'Event language',
     p_source_lang_hint: 'The language SPOKEN in the video. Use Auto-detect or the real language; if you pick another, the transcript will come out in that wrong language.',
     p_opt_auto: 'Auto-detect',
+    p_source_lang_search_ph: 'Search a language or its code (e.g. japanese, ko)…',
+    p_source_lang_no_match: 'No language matches',
     p_lbl_understood: "Languages you understand (don't translate)",
     p_understood_hint: 'Selected languages are only transcribed; everything else gets translated. (Ctrl+click to select several.)',
     p_lbl_participants: 'Participants',
