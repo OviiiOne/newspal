@@ -23,9 +23,12 @@ let transcriptionMode = 'none'; // 'gladia' | 'whisper'
 // Multilingual Whisper model (replaces English-only whisper-tiny.en).
 const WHISPER_MODEL = 'onnx-community/whisper-base';
 
-// For 'auto' detection, restrict Gladia to these languages (matches the popup list)
-// so it can't mis-detect into something irrelevant (e.g. Welsh in an English speech).
-const AUTO_LANGUAGES = ['es', 'en', 'fr', 'de', 'it', 'pt', 'ru', 'uk', 'tr', 'ar', 'he', 'fa', 'zh', 'ja'];
+// NOTE: 'auto' must send an EMPTY languages list. Per the Gladia live API reference,
+// `languages` means "if ONE language is set, use it; otherwise auto-detect" — it is not
+// a shortlist to choose from. Passing the 14 popup languages was therefore not a
+// restriction but an undefined case (most likely pinning the first entry, 'es'), which
+// is why a Japanese press conference transcribed to nothing. Gladia live covers 99+
+// languages, so full auto-detection is both correct and wider than any list we'd keep.
 
 // Whisper state
 let whisperPipeline = null;
@@ -201,10 +204,11 @@ async function connectGladia() {
         encoding: 'wav/pcm',
         sample_rate: 16000,
         channels: 1,
-        // 'auto' → empty list lets Gladia auto-detect (code_switching allows mid-stream changes).
+        // 'auto' → empty list lets Gladia auto-detect (code_switching re-detects on each
+        // utterance, so a bilingual Q&A keeps working).
         // Specific language → pin it for best accuracy.
         language_config: sourceLanguage === 'auto'
-          ? { languages: AUTO_LANGUAGES, code_switching: true }
+          ? { languages: [], code_switching: true }
           : { languages: [sourceLanguage], code_switching: false },
         realtime_processing: {
           words_accurate_timestamps: true,
