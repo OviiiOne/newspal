@@ -27,6 +27,11 @@
     "scripts": ["src/lib/lang.js", "src/background/background.js"]
   },
 
+  "options_ui": {
+    "page": "src/options/options.html",
+    "open_in_tab": true
+  },
+
   "browser_action": {
     "default_popup": "src/popup/popup.html",
     "default_icon": {
