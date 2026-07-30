@@ -1217,6 +1217,23 @@ function stopFactCheck() {
   isCapturing = false;
 }
 
+// ── Release notes after an update ─────────────────────────────────────────────
+// Firefox updates the extension silently from updates.json, so the user would never
+// find out what changed. Open the notes once, anchored at the new version. Skipped for
+// builds loaded from disk, which would otherwise open a tab on every reload while
+// developing.
+const CHANGELOG_URL = 'https://oviiione.tngl.io/newspal/changelog.html';
+
+browser.runtime.onInstalled.addListener(async ({ reason, previousVersion }) => {
+  const version = browser.runtime.getManifest().version;
+  if (reason !== 'update' || previousVersion === version) return;
+  try {
+    const info = await browser.management.getSelf();
+    if (info && info.installType === 'development') return;
+  } catch { /* couldn't tell — showing the notes is the harmless side */ }
+  browser.tabs.create({ url: CHANGELOG_URL + '#v' + version });
+});
+
 // ── Surviving a page reload ───────────────────────────────────────────────────
 // A reload (or a navigation) destroys everything that lives inside the page: the
 // panel, the audio capture and the Gladia socket. This background script survives,
