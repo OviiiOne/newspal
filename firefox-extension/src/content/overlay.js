@@ -1388,7 +1388,7 @@ browser.runtime.onMessage.addListener((msg) => {
   // IS_TOP_FRAME is defined in audio-capture.js (loaded before this script).
   if (typeof IS_TOP_FRAME !== 'undefined' && !IS_TOP_FRAME) {
     if (msg.type === 'START_FACTCHECK' && typeof startAudioCapture === 'function') {
-      startAudioCapture({ resume: !!msg.resume, captureMode: msg.captureMode });
+      startAudioCapture({ resume: !!msg.resume, captureMode: msg.captureMode, gladiaSessionUrl: msg.gladiaSessionUrl });
     }
     else if (msg.type === 'STOP_FACTCHECK' && typeof stopAudioCapture === 'function') stopAudioCapture();
     return;
@@ -1432,7 +1432,7 @@ browser.runtime.onMessage.addListener((msg) => {
         });
         renderSpeakerEditor();
         if (typeof startAudioCapture === 'function') {
-          startAudioCapture({ resume: isResume, captureMode: msg.captureMode });
+          startAudioCapture({ resume: isResume, captureMode: msg.captureMode, gladiaSessionUrl: msg.gladiaSessionUrl });
         }
       });
       break;

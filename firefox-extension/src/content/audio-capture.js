@@ -132,6 +132,7 @@ async function startAudioCapture(opts) {
   // waiting for a player that was never being used.
   const resuming = !!(opts && opts.resume);
   const previousMode = (opts && opts.captureMode) || null;
+  const previousGladiaUrl = (opts && opts.gladiaSessionUrl) || '';
 
   const data = await browser.storage.local.get(['gladiaKey', 'sourceLanguage', 'proxyUrl', 'connectionMode', 'proxyToken', 'uiLanguage']);
   gladiaKey = data.gladiaKey || '';
@@ -239,6 +240,7 @@ async function startAudioCapture(opts) {
   if (gladiaKey || gladiaProxyUrl) {
     transcriptionMode = 'gladia';
     utteranceBuffer = '';
+    if (resuming && previousGladiaUrl) await releasePreviousGladiaSession(previousGladiaUrl);
     connectGladia();
   } else {
     transcriptionMode = 'whisper';
@@ -334,6 +336,8 @@ async function connectGladia() {
 
     const initData = await initRes.json();
     const wsUrl = initData.url;
+    // The background outlives a page reload, so it keeps this for the resume below.
+    if (wsUrl) browser.runtime.sendMessage({ type: 'GLADIA_SESSION', url: wsUrl });
 
     if (!wsUrl) {
       browser.runtime.sendMessage({ type: 'PIPELINE_ERROR', message: t('ac_no_session_url') });
@@ -506,8 +510,31 @@ function endGladiaSession() {
 
 // A reload tears the page down without any of our stop paths running, which is how the
 // slot was being leaked. Best effort: the browser may kill the socket before the frame
-// is flushed, which is why connectGladia also retries.
+// is flushed — releasePreviousGladiaSession() below is the deterministic counterpart.
 window.addEventListener('pagehide', endGladiaSession);
+
+// Doing it at pagehide is a race against the browser; on a resume there is no rush. The
+// background kept the previous session's URL across the reload, so reopen it, send the
+// documented stop_recording, and only then ask for a new session — otherwise the free
+// plan's single slot is still held by a session nobody is listening to.
+// Reconnecting to an existing session URL is NOT documented, so this stays best effort:
+// on any failure we fall through to the init, which retries.
+function releasePreviousGladiaSession(url) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (done) return; done = true; resolve(); };
+    let ws;
+    try { ws = new WebSocket(url); } catch { return finish(); }
+    const giveUp = setTimeout(() => { try { ws.close(); } catch {} finish(); }, 4000);
+    ws.onopen = () => {
+      try { ws.send(JSON.stringify({ type: 'stop_recording' })); } catch {}
+      // Give the message a moment to go out before closing.
+      setTimeout(() => { clearTimeout(giveUp); try { ws.close(); } catch {} finish(); }, 500);
+    };
+    ws.onerror = () => { clearTimeout(giveUp); finish(); };
+    ws.onclose = () => { clearTimeout(giveUp); finish(); };
+  });
+}
 
 // ── Whisper local (fallback) ─────────────────────────────────────────────────
 
