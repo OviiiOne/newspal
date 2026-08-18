@@ -254,7 +254,10 @@ async function startAudioCapture(opts) {
 // cannot fix: the documented 400 / 401 / 422 mean the key or the parameters are wrong.
 // Anything else — network failures, our proxy's 502, or an undocumented status — is
 // treated as a hiccup worth retrying.
-const GLADIA_INIT_RETRY_DELAYS = [1500, 4000, 9000];
+// Long enough to outlast a slot still locked despite the stop_recording above (Gladia
+// documents no timeout for an abrupt disconnect, so this is deliberately generous: a
+// press conference is worth waiting two minutes for).
+const GLADIA_INIT_RETRY_DELAYS = [2000, 5000, 10000, 20000, 30000, 45000];
 
 function gladiaInitIsFatal(status) {
   return status === 400 || status === 401 || status === 422;
@@ -486,11 +489,31 @@ function arrayBufferToBase64(buffer) {
   return btoa(binary);
 }
 
+// Gladia's free plan allows ONE live session at a time, and closing the socket does NOT
+// end the session on their side — only the documented {"type":"stop_recording"} message
+// does. Without it the dead session keeps the slot, so the next init is refused: exactly
+// what happens a second after a page reload, and after any stop + start.
+function endGladiaSession() {
+  if (!socket) return;
+  try {
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: 'stop_recording' }));
+    }
+  } catch { /* the socket is already going down */ }
+  try { socket.close(); } catch { /* idem */ }
+  socket = null;
+}
+
+// A reload tears the page down without any of our stop paths running, which is how the
+// slot was being leaked. Best effort: the browser may kill the socket before the frame
+// is flushed, which is why connectGladia also retries.
+window.addEventListener('pagehide', endGladiaSession);
+
 // ── Whisper local (fallback) ─────────────────────────────────────────────────
 
 function fallbackToWhisper() {
   transcriptionMode = 'whisper'; // set FIRST so the closing socket doesn't reconnect
-  if (socket) { socket.close(); socket = null; }
+  endGladiaSession();
   stopGladiaPipeline();
   // Keep mediaStream — we reuse it for Whisper
   startWithWhisper();
@@ -713,11 +736,7 @@ function stopAudioCapture() {
   whisperChunks = [];
 
   stopGladiaPipeline();
-
-  if (socket) {
-    socket.close();
-    socket = null;
-  }
+  endGladiaSession();
 
   if (whisperProcessor) {
     whisperProcessor.disconnect();
