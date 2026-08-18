@@ -132,6 +132,7 @@ async function startAudioCapture(opts) {
   // waiting for a player that was never being used.
   const resuming = !!(opts && opts.resume);
   const previousMode = (opts && opts.captureMode) || null;
+  const previousGladiaUrl = (opts && opts.gladiaSessionUrl) || '';
 
   const data = await browser.storage.local.get(['gladiaKey', 'sourceLanguage', 'proxyUrl', 'connectionMode', 'proxyToken', 'uiLanguage']);
   gladiaKey = data.gladiaKey || '';
@@ -239,6 +240,7 @@ async function startAudioCapture(opts) {
   if (gladiaKey || gladiaProxyUrl) {
     transcriptionMode = 'gladia';
     utteranceBuffer = '';
+    if (resuming && previousGladiaUrl) await releasePreviousGladiaSession(previousGladiaUrl);
     connectGladia();
   } else {
     transcriptionMode = 'whisper';
@@ -248,46 +250,94 @@ async function startAudioCapture(opts) {
 
 // ── Gladia (primary) ─────────────────────────────────────────────────────────
 
+// A failed init used to end the session on the spot. After a page reload that meant the
+// press conference stopped transcribing silently, with a manual stop+start as the only
+// way back. Retry with backoff instead, and only give up at once on the errors a retry
+// cannot fix: the documented 400 / 401 / 422 mean the key or the parameters are wrong.
+// Anything else — network failures, our proxy's 502, or an undocumented status — is
+// treated as a hiccup worth retrying.
+// Long enough to outlast a slot still locked despite the stop_recording above (Gladia
+// documents no timeout for an abrupt disconnect, so this is deliberately generous: a
+// press conference is worth waiting two minutes for).
+const GLADIA_INIT_RETRY_DELAYS = [2000, 5000, 10000, 20000, 30000, 45000];
+
+function gladiaInitIsFatal(status) {
+  return status === 400 || status === 401 || status === 422;
+}
+
+async function requestGladiaSession() {
+  // Direct (key in browser) or via proxy (key on server). Proxy forwards to Gladia.
+  const initUrl = gladiaKey ? 'https://api.gladia.io/v2/live' : gladiaProxyUrl;
+  const initHeaders = gladiaKey
+    ? { 'Content-Type': 'application/json', 'x-gladia-key': gladiaKey }
+    : { 'Content-Type': 'application/json' };
+  if (!gladiaKey && proxyToken) initHeaders['x-proxy-token'] = proxyToken;
+
+  return fetch(initUrl, {
+    method: 'POST',
+    headers: initHeaders,
+    body: JSON.stringify({
+      encoding: 'wav/pcm',
+      sample_rate: 16000,
+      channels: 1,
+      // 'auto' → empty list lets Gladia auto-detect (code_switching re-detects on each
+      // utterance, so a bilingual Q&A keeps working).
+      // Specific language → pin it for best accuracy.
+      language_config: sourceLanguage === 'auto'
+        ? { languages: [], code_switching: true }
+        : { languages: [sourceLanguage], code_switching: false },
+      realtime_processing: {
+        words_accurate_timestamps: true,
+      },
+    }),
+  });
+}
+
 async function connectGladia() {
   try {
-    // Direct (key in browser) or via proxy (key on server). Proxy forwards to Gladia.
-    const initUrl = gladiaKey ? 'https://api.gladia.io/v2/live' : gladiaProxyUrl;
-    const initHeaders = gladiaKey
-      ? { 'Content-Type': 'application/json', 'x-gladia-key': gladiaKey }
-      : { 'Content-Type': 'application/json' };
-    if (!gladiaKey && proxyToken) initHeaders['x-proxy-token'] = proxyToken;
+    let initRes = null;
+    let detail = '';
+    let lastStatus = 0;
 
-    const initRes = await fetch(initUrl, {
-      method: 'POST',
-      headers: initHeaders,
-      body: JSON.stringify({
-        encoding: 'wav/pcm',
-        sample_rate: 16000,
-        channels: 1,
-        // 'auto' → empty list lets Gladia auto-detect (code_switching re-detects on each
-        // utterance, so a bilingual Q&A keeps working).
-        // Specific language → pin it for best accuracy.
-        language_config: sourceLanguage === 'auto'
-          ? { languages: [], code_switching: true }
-          : { languages: [sourceLanguage], code_switching: false },
-        realtime_processing: {
-          words_accurate_timestamps: true,
-        },
-      }),
-    });
+    for (let attempt = 0; attempt <= GLADIA_INIT_RETRY_DELAYS.length; attempt++) {
+      if (!captureActive) return; // stopped while we were waiting
+      detail = '';
+      try {
+        const res = await requestGladiaSession();
+        if (res.ok) { initRes = res; break; }
+        lastStatus = res.status;
+        try { const e = await res.json(); detail = (e && e.error && e.error.message) || ''; } catch {}
+        console.error('[gladia] init failed:', res.status, detail, 'attempt', attempt + 1);
+        if (gladiaInitIsFatal(res.status)) break;
+      } catch (err) {
+        lastStatus = 0;
+        detail = err.message || '';
+        console.error('[gladia] init request threw:', detail, 'attempt', attempt + 1);
+      }
 
-    if (!initRes.ok) {
-      let detail = '';
-      try { const e = await initRes.json(); detail = (e && e.error && e.error.message) || ''; } catch {}
-      console.error('[gladia] init failed:', initRes.status, detail);
+      const delay = GLADIA_INIT_RETRY_DELAYS[attempt];
+      if (delay === undefined) break; // attempts exhausted
+      browser.runtime.sendMessage({
+        type: 'PIPELINE_INFO',
+        message: fmt(t('ac_gladia_retrying'), { n: attempt + 1, total: GLADIA_INIT_RETRY_DELAYS.length + 1 }),
+      });
+      await new Promise(r => setTimeout(r, delay));
+    }
+
+    if (!initRes) {
       const via = gladiaKey ? '' : t('ac_via_proxy');
-      browser.runtime.sendMessage({ type: 'PIPELINE_ERROR', message: fmt(t('ac_gladia_failed_status'), { via, status: initRes.status }) + (detail ? ' ' + detail : '') });
+      browser.runtime.sendMessage({
+        type: 'PIPELINE_ERROR',
+        message: fmt(t('ac_gladia_failed_status'), { via, status: lastStatus || '—' }) + (detail ? ' ' + detail : ''),
+      });
       stopAudioCapture();
       return;
     }
 
     const initData = await initRes.json();
     const wsUrl = initData.url;
+    // The background outlives a page reload, so it keeps this for the resume below.
+    if (wsUrl) browser.runtime.sendMessage({ type: 'GLADIA_SESSION', url: wsUrl });
 
     if (!wsUrl) {
       browser.runtime.sendMessage({ type: 'PIPELINE_ERROR', message: t('ac_no_session_url') });
@@ -443,11 +493,54 @@ function arrayBufferToBase64(buffer) {
   return btoa(binary);
 }
 
+// Gladia's free plan allows ONE live session at a time, and closing the socket does NOT
+// end the session on their side — only the documented {"type":"stop_recording"} message
+// does. Without it the dead session keeps the slot, so the next init is refused: exactly
+// what happens a second after a page reload, and after any stop + start.
+function endGladiaSession() {
+  if (!socket) return;
+  try {
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: 'stop_recording' }));
+    }
+  } catch { /* the socket is already going down */ }
+  try { socket.close(); } catch { /* idem */ }
+  socket = null;
+}
+
+// A reload tears the page down without any of our stop paths running, which is how the
+// slot was being leaked. Best effort: the browser may kill the socket before the frame
+// is flushed — releasePreviousGladiaSession() below is the deterministic counterpart.
+window.addEventListener('pagehide', endGladiaSession);
+
+// Doing it at pagehide is a race against the browser; on a resume there is no rush. The
+// background kept the previous session's URL across the reload, so reopen it, send the
+// documented stop_recording, and only then ask for a new session — otherwise the free
+// plan's single slot is still held by a session nobody is listening to.
+// Reconnecting to an existing session URL is NOT documented, so this stays best effort:
+// on any failure we fall through to the init, which retries.
+function releasePreviousGladiaSession(url) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (done) return; done = true; resolve(); };
+    let ws;
+    try { ws = new WebSocket(url); } catch { return finish(); }
+    const giveUp = setTimeout(() => { try { ws.close(); } catch {} finish(); }, 4000);
+    ws.onopen = () => {
+      try { ws.send(JSON.stringify({ type: 'stop_recording' })); } catch {}
+      // Give the message a moment to go out before closing.
+      setTimeout(() => { clearTimeout(giveUp); try { ws.close(); } catch {} finish(); }, 500);
+    };
+    ws.onerror = () => { clearTimeout(giveUp); finish(); };
+    ws.onclose = () => { clearTimeout(giveUp); finish(); };
+  });
+}
+
 // ── Whisper local (fallback) ─────────────────────────────────────────────────
 
 function fallbackToWhisper() {
   transcriptionMode = 'whisper'; // set FIRST so the closing socket doesn't reconnect
-  if (socket) { socket.close(); socket = null; }
+  endGladiaSession();
   stopGladiaPipeline();
   // Keep mediaStream — we reuse it for Whisper
   startWithWhisper();
@@ -670,11 +763,7 @@ function stopAudioCapture() {
   whisperChunks = [];
 
   stopGladiaPipeline();
-
-  if (socket) {
-    socket.close();
-    socket = null;
-  }
+  endGladiaSession();
 
   if (whisperProcessor) {
     whisperProcessor.disconnect();

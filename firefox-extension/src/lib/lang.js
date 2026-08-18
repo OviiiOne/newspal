@@ -286,6 +286,7 @@ const I18N = {
     // Audio capture
     ac_perm_denied: 'Permiso de audio denegado. Permite la entrada de audio para esta página.',
     ac_capture_fail: 'Fallo al capturar audio: ',
+    ac_gladia_retrying: 'Gladia aún no libera la sesión anterior; reintentando ({n}/{total})…',
     ac_waiting_player: 'Esperando a que el vídeo vuelva a reproducirse…',
     ac_player_gone: 'No he encontrado el vídeo de la página. Dale al play y vuelve a pulsar Iniciar.',
     ac_no_audio: 'No se detectó audio. Asegúrate de que el vídeo se está reproduciendo, o elige un dispositivo de audio del sistema.',
@@ -422,6 +423,7 @@ const I18N = {
     // Audio capture
     ac_perm_denied: 'Audio permission denied. Allow audio input for this page.',
     ac_capture_fail: 'Audio capture failed: ',
+    ac_gladia_retrying: 'Gladia has not released the previous session yet; retrying ({n}/{total})…',
     ac_waiting_player: 'Waiting for the video to start playing again…',
     ac_player_gone: 'Could not find the page video. Press play and hit Start again.',
     ac_no_audio: 'No audio detected. Make sure the video is playing, or pick a system-audio device.',

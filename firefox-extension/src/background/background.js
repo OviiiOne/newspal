@@ -930,6 +930,7 @@ const SESSION_BACKUP_KEY = 'sessionBackup';
 // frames that find a media element ask for this slot and the first one wins.
 let captureClaimedBy = null; // frameId of the frame that captures, or null
 let captureMode = null;      // 'page' | 'device' — reported by the capturing frame
+let gladiaSessionUrl = null; // live session of the CURRENT page, so a resume can end it
 
 function sendToTab(tabId, msg) {
   browser.tabs.sendMessage(tabId, msg).catch(() => {});
@@ -1081,6 +1082,13 @@ browser.runtime.onMessage.addListener((msg, sender) => {
       captureMode = msg.mode === 'device' ? 'device' : 'page';
       return Promise.resolve();
 
+    // Gladia's free plan allows one live session at a time. The page that owns it is
+    // about to be destroyed by a reload, so remember it here: the resumed page reopens
+    // it just to end it, freeing the slot before asking for a new one.
+    case 'GLADIA_SESSION':
+      gladiaSessionUrl = msg.url || null;
+      return Promise.resolve();
+
     case 'CAPTURE_READY':
       if (activeTabId) sendToTab(activeTabId, { type: 'CAPTURE_READY' });
       return Promise.resolve();
@@ -1193,6 +1201,7 @@ async function startFactCheck() {
   recentClaims.clear();
   captureClaimedBy = null;
   captureMode = null;
+  gladiaSessionUrl = null;
 
   await sendToTab(activeTabId, { type: 'START_FACTCHECK', sessionId, resume: false });
   return { ok: true };
@@ -1214,6 +1223,7 @@ function stopFactCheck() {
 
   activeTabId = null;
   sessionId = null;
+  gladiaSessionUrl = null;
   isCapturing = false;
 }
 
@@ -1263,7 +1273,7 @@ async function resumeInTab() {
   // The content scripts may still be booting, so retry briefly before giving up.
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      await browser.tabs.sendMessage(tabId, { type: 'START_FACTCHECK', sessionId, resume: true, captureMode });
+      await browser.tabs.sendMessage(tabId, { type: 'START_FACTCHECK', sessionId, resume: true, captureMode, gladiaSessionUrl });
       resumePending = false;
       return;
     } catch {
