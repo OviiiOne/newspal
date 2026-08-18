@@ -248,40 +248,83 @@ async function startAudioCapture(opts) {
 
 // ── Gladia (primary) ─────────────────────────────────────────────────────────
 
+// A failed init used to end the session on the spot. After a page reload that meant the
+// press conference stopped transcribing silently, with a manual stop+start as the only
+// way back. Retry with backoff instead, and only give up at once on the errors a retry
+// cannot fix: the documented 400 / 401 / 422 mean the key or the parameters are wrong.
+// Anything else — network failures, our proxy's 502, or an undocumented status — is
+// treated as a hiccup worth retrying.
+const GLADIA_INIT_RETRY_DELAYS = [1500, 4000, 9000];
+
+function gladiaInitIsFatal(status) {
+  return status === 400 || status === 401 || status === 422;
+}
+
+async function requestGladiaSession() {
+  // Direct (key in browser) or via proxy (key on server). Proxy forwards to Gladia.
+  const initUrl = gladiaKey ? 'https://api.gladia.io/v2/live' : gladiaProxyUrl;
+  const initHeaders = gladiaKey
+    ? { 'Content-Type': 'application/json', 'x-gladia-key': gladiaKey }
+    : { 'Content-Type': 'application/json' };
+  if (!gladiaKey && proxyToken) initHeaders['x-proxy-token'] = proxyToken;
+
+  return fetch(initUrl, {
+    method: 'POST',
+    headers: initHeaders,
+    body: JSON.stringify({
+      encoding: 'wav/pcm',
+      sample_rate: 16000,
+      channels: 1,
+      // 'auto' → empty list lets Gladia auto-detect (code_switching re-detects on each
+      // utterance, so a bilingual Q&A keeps working).
+      // Specific language → pin it for best accuracy.
+      language_config: sourceLanguage === 'auto'
+        ? { languages: [], code_switching: true }
+        : { languages: [sourceLanguage], code_switching: false },
+      realtime_processing: {
+        words_accurate_timestamps: true,
+      },
+    }),
+  });
+}
+
 async function connectGladia() {
   try {
-    // Direct (key in browser) or via proxy (key on server). Proxy forwards to Gladia.
-    const initUrl = gladiaKey ? 'https://api.gladia.io/v2/live' : gladiaProxyUrl;
-    const initHeaders = gladiaKey
-      ? { 'Content-Type': 'application/json', 'x-gladia-key': gladiaKey }
-      : { 'Content-Type': 'application/json' };
-    if (!gladiaKey && proxyToken) initHeaders['x-proxy-token'] = proxyToken;
+    let initRes = null;
+    let detail = '';
+    let lastStatus = 0;
 
-    const initRes = await fetch(initUrl, {
-      method: 'POST',
-      headers: initHeaders,
-      body: JSON.stringify({
-        encoding: 'wav/pcm',
-        sample_rate: 16000,
-        channels: 1,
-        // 'auto' → empty list lets Gladia auto-detect (code_switching re-detects on each
-        // utterance, so a bilingual Q&A keeps working).
-        // Specific language → pin it for best accuracy.
-        language_config: sourceLanguage === 'auto'
-          ? { languages: [], code_switching: true }
-          : { languages: [sourceLanguage], code_switching: false },
-        realtime_processing: {
-          words_accurate_timestamps: true,
-        },
-      }),
-    });
+    for (let attempt = 0; attempt <= GLADIA_INIT_RETRY_DELAYS.length; attempt++) {
+      if (!captureActive) return; // stopped while we were waiting
+      detail = '';
+      try {
+        const res = await requestGladiaSession();
+        if (res.ok) { initRes = res; break; }
+        lastStatus = res.status;
+        try { const e = await res.json(); detail = (e && e.error && e.error.message) || ''; } catch {}
+        console.error('[gladia] init failed:', res.status, detail, 'attempt', attempt + 1);
+        if (gladiaInitIsFatal(res.status)) break;
+      } catch (err) {
+        lastStatus = 0;
+        detail = err.message || '';
+        console.error('[gladia] init request threw:', detail, 'attempt', attempt + 1);
+      }
 
-    if (!initRes.ok) {
-      let detail = '';
-      try { const e = await initRes.json(); detail = (e && e.error && e.error.message) || ''; } catch {}
-      console.error('[gladia] init failed:', initRes.status, detail);
+      const delay = GLADIA_INIT_RETRY_DELAYS[attempt];
+      if (delay === undefined) break; // attempts exhausted
+      browser.runtime.sendMessage({
+        type: 'PIPELINE_INFO',
+        message: fmt(t('ac_gladia_retrying'), { n: attempt + 1, total: GLADIA_INIT_RETRY_DELAYS.length + 1 }),
+      });
+      await new Promise(r => setTimeout(r, delay));
+    }
+
+    if (!initRes) {
       const via = gladiaKey ? '' : t('ac_via_proxy');
-      browser.runtime.sendMessage({ type: 'PIPELINE_ERROR', message: fmt(t('ac_gladia_failed_status'), { via, status: initRes.status }) + (detail ? ' ' + detail : '') });
+      browser.runtime.sendMessage({
+        type: 'PIPELINE_ERROR',
+        message: fmt(t('ac_gladia_failed_status'), { via, status: lastStatus || '—' }) + (detail ? ' ' + detail : ''),
+      });
       stopAudioCapture();
       return;
     }
