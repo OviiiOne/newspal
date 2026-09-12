@@ -31,7 +31,8 @@ const ALL_PROVIDERS = [
   { id: 'groq', name: 'Groq', free: true },
   { id: 'cerebras', name: 'Cerebras', free: true },
   { id: 'mistral', name: 'Mistral', free: true },
-  { id: 'gemini', name: 'Gemini', free: false },
+  // Gemini's AI Studio tier is free and needs no card, like the other three.
+  { id: 'gemini', name: 'Gemini', free: true },
   { id: 'claude', name: 'Claude', free: false },
 ];
 // Mistral leads by preference (European provider); the rest are the safety net.

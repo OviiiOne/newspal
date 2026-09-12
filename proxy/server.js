@@ -13,11 +13,12 @@ const GLADIA_KEY = process.env.GLADIA_API_KEY || '';
 // client walks a fallback chain a single retirement can break every provider at once.
 // So the model is DISCOVERED instead — each provider's GET /v1/models lists exactly what
 // this key may call, and we pick the best one there. An env var still overrides it
-// (GROQ_MODEL / MISTRAL_MODEL / CEREBRAS_MODEL) for pinning a specific model on purpose.
+// (GROQ_MODEL / MISTRAL_MODEL / CEREBRAS_MODEL / GEMINI_MODEL) to pin one on purpose.
 const MODEL_OVERRIDES = {
   groq: process.env.GROQ_MODEL || '',
   mistral: process.env.MISTRAL_MODEL || '',
   cerebras: process.env.CEREBRAS_MODEL || '',
+  gemini: process.env.GEMINI_MODEL || '',
 };
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
 const PROXY_TOKEN = process.env.PROXY_TOKEN || '';
@@ -72,14 +73,14 @@ function toGeminiRequest(system, messages, temperature, maxTokens, grounded) {
 }
 
 // Gemini: convert response to Claude-compatible format (+ grounding sources)
-function fromGeminiResponse(data) {
+function fromGeminiResponse(data, model) {
   const cand = data.candidates?.[0];
   const text = (cand?.content?.parts || []).map(p => p.text).filter(Boolean).join('') || '';
   const chunks = cand?.groundingMetadata?.groundingChunks || [];
   const sources = chunks.map(c => c.web?.uri).filter(Boolean);
   return {
     content: [{ type: 'text', text }],
-    model: 'gemini-2.0-flash',
+    model,
     stop_reason: 'end_turn',
     sources,
   };
@@ -105,23 +106,30 @@ async function handleClaude(body) {
   return { status: response.status, data: await response.json() };
 }
 
+// Gemini speaks its own dialect but gets the same treatment as the rest: the model comes
+// from Google's own catalogue and a failing one falls through to the next.
 async function handleGemini(body) {
   const { max_tokens, temperature, system, messages, grounded } = body;
-  const geminiModel = 'gemini-2.0-flash';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${GEMINI_KEY}`;
   const geminiBody = toGeminiRequest(system, messages, temperature, max_tokens, grounded);
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(geminiBody),
+  return withModelFallback('gemini', 'Gemini', async (model) => {
+    const url = GEMINI_BASE + '/models/' + encodeURIComponent(model)
+      + ':generateContent?key=' + encodeURIComponent(GEMINI_KEY);
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(geminiBody),
+    });
+    const raw = await response.json().catch(() => ({}));
+    const data = response.ok ? fromGeminiResponse(raw, model) : null;
+    return {
+      ok: response.ok,
+      status: response.status,
+      message: raw?.error?.message || '',
+      text: data ? data.content[0].text.trim() : '',
+      result: { status: 200, data },
+    };
   });
-
-  const raw = await response.json();
-  if (!response.ok) {
-    return { status: response.status, data: { error: { message: raw.error?.message || 'Gemini API error' } } };
-  }
-  return { status: 200, data: fromGeminiResponse(raw) };
 }
 
 // ── Model discovery ───────────────────────────────────────────────────────────
@@ -160,9 +168,24 @@ const OPENAI_COMPAT = {
   },
 };
 
+const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+
+// Gemini isn't OpenAI-compatible, but it has a catalogue too, so it joins the same
+// discovery machinery. Flash models first: they carry the generous free-tier limits and
+// the speed a live transcript needs, and Pro would burn the quota for no benefit here.
+const GEMINI_CFG = {
+  key: GEMINI_KEY, label: 'Gemini',
+  prefer: [/^gemini-[\d.]+-flash$/, /flash-latest$/, /-flash$/, /flash/, /^gemini-[\d.]+-pro$/, /^gemma/],
+  fallback: 'gemini-2.5-flash',
+  list: listGeminiModels,
+};
+
+// Every provider whose model is discovered rather than pinned.
+const MODEL_PROVIDERS = { ...OPENAI_COMPAT, gemini: GEMINI_CFG };
+
 // Ids that are not general-purpose chat models: embeddings, moderation, speech, OCR,
 // code-only and experimental families. They show up in the same listing.
-const NON_CHAT_MODEL = /(embed|moderation|guard|whisper|tts|transcribe|voxtral|ocr|rerank|codestral|devstral|labs-)/i;
+const NON_CHAT_MODEL = /(embed|moderation|guard|whisper|tts|transcribe|voxtral|ocr|rerank|codestral|devstral|labs-|imagen|veo|aqa|native-audio|live-|-image|image-)/i;
 
 const MODEL_TTL_MS = 6 * 60 * 60 * 1000; // re-read the catalogue twice a day
 const MODEL_ATTEMPTS = 3;                // models to try per request before giving up
@@ -179,7 +202,22 @@ const REASONING_MIN_TOKENS = 1200;
 const modelCache = {};   // provider -> { ranked: [id], at }
 const modelCooldown = {}; // "provider:model" -> timestamp it becomes usable again
 
+// Google's catalogue: a different shape, and it states per model which methods it
+// supports — the authoritative way to keep embedding/image/audio models out.
+async function listGeminiModels(cfg) {
+  const res = await fetch(GEMINI_BASE + '/models?pageSize=200&key=' + encodeURIComponent(cfg.key));
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const raw = await res.json();
+  const items = Array.isArray(raw?.models) ? raw.models : [];
+  return items
+    .filter(m => Array.isArray(m?.supportedGenerationMethods)
+      && m.supportedGenerationMethods.includes('generateContent'))
+    .map(m => String(m?.name || '').replace(/^models\//, ''))
+    .filter(id => id && !NON_CHAT_MODEL.test(id));
+}
+
 async function listChatModels(cfg) {
+  if (cfg.list) return cfg.list(cfg);
   const res = await fetch(cfg.base + '/models', {
     headers: { 'Authorization': 'Bearer ' + cfg.key },
   });
@@ -196,6 +234,24 @@ async function listChatModels(cfg) {
     .map(m => m.id);
 }
 
+// Version numbers inside a model id, as numbers: "gemini-2.5-flash" → [2, 5],
+// "mistral-large-2512" → [2512]. Used to tell generations apart within one family.
+function versionOf(id) {
+  return (id.match(/\d+/g) || []).map(Number);
+}
+
+// Newer first. Plain string ordering would put gemini-1.5-flash ahead of gemini-2.5-flash
+// and an old dated snapshot ahead of a recent one — i.e. reliably choose the model
+// closest to being retired.
+function byNewest(a, b) {
+  const va = versionOf(a), vb = versionOf(b);
+  for (let i = 0; i < Math.max(va.length, vb.length); i++) {
+    const d = (vb[i] ?? -1) - (va[i] ?? -1);
+    if (d) return d;
+  }
+  return a.localeCompare(b);
+}
+
 // Best first. Anything the preference list doesn't recognise still makes the list, last —
 // an unknown model is worth trying before failing the request outright.
 function rankModels(cfg, ids) {
@@ -203,7 +259,7 @@ function rankModels(cfg, ids) {
     const i = cfg.prefer.findIndex(re => re.test(id));
     return i === -1 ? cfg.prefer.length : i;
   };
-  return ids.slice().sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+  return ids.slice().sort((a, b) => rank(a) - rank(b) || byNewest(a, b));
 }
 
 async function rankedModels(provider) {
@@ -213,7 +269,7 @@ async function rankedModels(provider) {
   const cached = modelCache[provider];
   if (cached && Date.now() - cached.at < MODEL_TTL_MS) return cached.ranked;
 
-  const cfg = OPENAI_COMPAT[provider];
+  const cfg = MODEL_PROVIDERS[provider];
   try {
     const ranked = rankModels(cfg, await listChatModels(cfg));
     if (!ranked.length) throw new Error('no chat models listed');
@@ -262,10 +318,64 @@ function worthAnotherModel(status, message) {
   return status >= 500;
 }
 
+// Run one request against a provider, walking its ranked models until one answers.
+// `attempt(model)` does the provider-specific call and returns
+// { ok, status, message, text, result } — `result` is the finished response envelope.
+// Everything about WHICH model to use, when to move on and what to park lives here, so
+// every provider gets the same behaviour regardless of the dialect it speaks.
+async function withModelFallback(provider, label, attempt) {
+  let ranked = await rankedModels(provider);
+  let queue = candidateModels(provider, ranked);
+  const tried = new Set();
+  let last = { status: 502, data: { error: { message: label + ': no model to try' } } };
+  let relisted = false;
+
+  while (queue.length) {
+    const model = queue.shift();
+    if (tried.has(model)) continue;
+    tried.add(model);
+
+    const { ok, status, message, text, result } = await attempt(model);
+    if (ok && text) {
+      delete modelCooldown[provider + ':' + model];
+      return result;
+    }
+
+    // A 200 with no content is a failure of THIS model, not of the request: a reasoning
+    // model can spend the whole budget thinking and answer nothing. The client would
+    // read it as a dead provider, so fall through to the next model here instead.
+    if (ok) {
+      last = { status: 502, data: { error: { message: `${label}: "${model}" returned no content` } } };
+      modelCooldown[provider + ':' + model] = Date.now() + MODEL_COOLDOWN_MS;
+      console.warn(`[models] ${provider}: "${model}" returned empty content — next model`);
+      continue;
+    }
+
+    last = { status, data: { error: { message: message || (label + ' API error') } } };
+    if (!worthAnotherModel(status, message)) break;
+
+    // This model is the problem, not the account — stop picking it for a few minutes so
+    // the next calls don't pay for the same failure again.
+    modelCooldown[provider + ':' + model] = Date.now() + MODEL_COOLDOWN_MS;
+    console.warn(`[models] ${provider}: "${model}" failed (${status}: ${message}) — next model`);
+
+    // A retirement means our cached catalogue is stale, so the rest of the queue may be
+    // stale too. Re-read it once and carry on with what it now offers.
+    if (isModelGone(status, message) && !relisted && !MODEL_OVERRIDES[provider]) {
+      relisted = true;
+      delete modelCache[provider];
+      ranked = await rankedModels(provider);
+      queue = candidateModels(provider, ranked).filter(id => !tried.has(id));
+    }
+  }
+
+  return last;
+}
+
 // Generic handler for OpenAI-compatible chat APIs (Groq, Mistral, Cerebras all speak
 // the same /chat/completions dialect).
 async function handleOpenAICompat(provider, body) {
-  const cfg = OPENAI_COMPAT[provider];
+  const cfg = MODEL_PROVIDERS[provider];
   const { max_tokens, temperature, system, messages, grounded, json } = body;
 
   const msgs = [];
@@ -331,53 +441,11 @@ async function handleOpenAICompat(provider, body) {
     return success(cfg.groundedModel, raw);
   }
 
-  let ranked = await rankedModels(provider);
-  let queue = candidateModels(provider, ranked);
-  const tried = new Set();
-  let last = { status: 502, data: { error: { message: cfg.label + ': no model to try' } } };
-  let relisted = false;
-
-  while (queue.length) {
-    const model = queue.shift();
-    if (tried.has(model)) continue;
-    tried.add(model);
-
+  return withModelFallback(provider, cfg.label, async (model) => {
     const { response, raw, message } = await tryModel(model);
     const text = response.ok ? (raw.choices?.[0]?.message?.content || '').trim() : '';
-    if (response.ok && text) {
-      delete modelCooldown[provider + ':' + model];
-      return success(model, raw);
-    }
-
-    // A 200 with no content is a failure of THIS model, not of the request: a reasoning
-    // model can spend the whole budget thinking and answer nothing. The client would
-    // read it as a dead provider, so fall through to the next model here instead.
-    if (response.ok) {
-      last = { status: 502, data: { error: { message: `${cfg.label}: "${model}" returned no content` } } };
-      modelCooldown[provider + ':' + model] = Date.now() + MODEL_COOLDOWN_MS;
-      console.warn(`[models] ${provider}: "${model}" returned empty content — next model`);
-      continue;
-    }
-
-    last = { status: response.status, data: { error: { message: message || (cfg.label + ' API error') } } };
-    if (!worthAnotherModel(response.status, message)) break;
-
-    // This model is the problem, not the account — stop picking it for a few minutes so
-    // the next calls don't pay for the same failure again.
-    modelCooldown[provider + ':' + model] = Date.now() + MODEL_COOLDOWN_MS;
-    console.warn(`[models] ${provider}: "${model}" failed (${response.status}: ${message}) — next model`);
-
-    // A retirement means our cached catalogue is stale, so the rest of the queue may be
-    // stale too. Re-read it once and carry on with what it now offers.
-    if (isModelGone(response.status, message) && !relisted && !MODEL_OVERRIDES[provider]) {
-      relisted = true;
-      delete modelCache[provider];
-      ranked = await rankedModels(provider);
-      queue = candidateModels(provider, ranked).filter(id => !tried.has(id));
-    }
-  }
-
-  return last;
+    return { ok: response.ok, status: response.status, message, text, result: success(model, raw) };
+  });
 }
 
 // NOTE: Groq's web search does NOT work on the FREE tier. When a compound model
@@ -467,10 +535,9 @@ app.post('/gladia/live', async (req, res) => {
 app.get('/health', async (req, res) => {
   const providers = [];
   const models = {};
-  const configured = { groq: !!GROQ_KEY, cerebras: !!CEREBRAS_KEY, mistral: !!MISTRAL_KEY };
   const now = Date.now();
-  for (const provider of ['groq', 'cerebras', 'mistral']) {
-    if (!configured[provider]) continue;
+  for (const provider of Object.keys(MODEL_PROVIDERS)) {
+    if (!MODEL_PROVIDERS[provider].key) continue;
     providers.push(provider);
     const ranked = await rankedModels(provider);
     const queue = candidateModels(provider, ranked);
@@ -485,7 +552,6 @@ app.get('/health', async (req, res) => {
     };
   }
   if (ANTHROPIC_KEY) providers.push('claude');
-  if (GEMINI_KEY) providers.push('gemini');
   res.json({ status: 'ok', providers, models, gladia: !!GLADIA_KEY });
 });
 
@@ -493,7 +559,7 @@ app.listen(PORT, () => {
   console.log(`NewsPal proxy running on port ${PORT}`);
   // Warm the model rankings so the first real call doesn't pay for the listing, and so
   // the deploy logs record what each provider resolved to. Never blocks startup.
-  for (const provider of ['groq', 'cerebras', 'mistral']) {
-    if (OPENAI_COMPAT[provider].key) rankedModels(provider).catch(() => {});
+  for (const provider of Object.keys(MODEL_PROVIDERS)) {
+    if (MODEL_PROVIDERS[provider].key) rankedModels(provider).catch(() => {});
   }
 });
