@@ -138,6 +138,46 @@ body {
 .provider-move:hover:not(:disabled) { background: rgba(255,255,255,0.14); }
 .provider-move:disabled { opacity: 0.3; cursor: default; }
 
+/* Per-provider result of the "test the models" run. The badge sits in the row so the
+   state reads next to the provider it belongs to; the full error text goes below. */
+.provider-status {
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 700;
+}
+.provider-status.ok { color: #4ade80; }
+.provider-status.fail { color: #f87171; }
+.provider-status.testing { color: #9a9a9a; font-weight: 400; }
+
+.test-providers-btn {
+  margin-top: 5px;
+  width: 100%;
+  background: rgba(255,255,255,0.06);
+  border: 0.5px solid rgba(255,255,255,0.12);
+  color: #cbd5e1;
+  border-radius: 6px;
+  font-family: 'Inter', sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.test-providers-btn:hover:not(:disabled) { background: rgba(255,255,255,0.14); }
+.test-providers-btn:disabled { opacity: 0.5; cursor: default; }
+
+.provider-test-details {
+  font-size: 9px;
+  line-height: 1.45;
+  color: #9a9a9a;
+  margin-top: 5px;
+  /* Provider errors are long sentences with model ids in them — let them wrap. */
+  word-break: break-word;
+}
+.provider-test-details:empty { display: none; }
+.provider-test-details .fail { color: #fca5a5; }
+.provider-test-details .ok { color: #86efac; }
+
 /* Search box above the 99-language picker */
 .lang-search { margin-bottom: 5px; }
 .lang-search.no-match {

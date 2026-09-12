@@ -15,6 +15,8 @@ const modeProxyBtn = document.getElementById('modeProxy');
 const apiKeyFields = document.getElementById('apiKeyFields');
 const proxyFields = document.getElementById('proxyFields');
 const providerChainEl = document.getElementById('providerChain');
+const testProvidersBtn = document.getElementById('testProvidersBtn');
+const providerTestDetails = document.getElementById('providerTestDetails');
 const uiLangEsBtn = document.getElementById('uiLangEs');
 const uiLangEnBtn = document.getElementById('uiLangEn');
 
@@ -32,9 +34,14 @@ const ALL_PROVIDERS = [
   { id: 'gemini', name: 'Gemini', free: false },
   { id: 'claude', name: 'Claude', free: false },
 ];
-const DEFAULT_CHAIN = ['groq', 'cerebras', 'mistral'];
+// Mistral leads by preference (European provider); the rest are the safety net.
+// Keep in sync with DEFAULT_PROVIDER_CHAIN in background.js.
+const DEFAULT_CHAIN = ['mistral', 'cerebras', 'groq'];
 // Full display order with an enabled flag per provider (enabled ones lead, in chain order).
 let providerOrder = [];
+// Result of the last "test the models" run, per provider id:
+// { state: 'testing' | 'ok' | 'fail', model?, err? }. Survives re-renders of the chain.
+let providerStatus = {};
 
 // ── UI language (bilingual edition) ──────────────────────────────────────────
 // One setting drives the popup/overlay texts AND the language the AI writes in.
@@ -217,13 +224,106 @@ function renderProviderChain() {
     down.disabled = i === providerOrder.length - 1;
     down.addEventListener('click', () => moveProvider(i, +1));
 
+    const st = providerStatus[p.id];
+    let badge = null;
+    if (st) {
+      badge = document.createElement('span');
+      badge.className = 'provider-status ' + st.state;
+      badge.textContent = st.state === 'ok' ? '✓' : st.state === 'fail' ? '✕' : '…';
+      // The model that actually answered — that is what a retirement changes.
+      badge.title = st.state === 'ok' ? (st.model || '') : (st.err || '');
+    }
+
     row.appendChild(cb);
     row.appendChild(label);
+    if (badge) row.appendChild(badge);
     row.appendChild(up);
     row.appendChild(down);
     providerChainEl.appendChild(row);
   });
 }
+
+// ── "Test the models" ─────────────────────────────────────────────────────────
+// A hosted model can be retired without warning; the API then answers "the model …
+// does not exist", which breaks EVERY provider in the queue at once and — because
+// key-point extraction calls the chain silently — does it without a visible error.
+// This asks each enabled provider for one word, so the queue can be checked before a
+// press conference instead of during one. The proxy echoes the model it used.
+async function testProvider(provider, proxyUrl, proxyToken) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (proxyToken) headers['x-proxy-token'] = proxyToken;
+  try {
+    const res = await fetch(proxyUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        provider,
+        model: provider === 'gemini' ? 'gemini-2.0-flash'
+             : provider === 'claude' ? 'claude-haiku-4-5-20251001' : undefined,
+        max_tokens: 16,
+        temperature: 0,
+        system: 'Reply with the single word OK.',
+        messages: [{ role: 'user', content: 'ping' }],
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) {
+      return { state: 'fail', err: data.error?.message || ('HTTP ' + res.status) };
+    }
+    if (!data?.content?.[0]?.text?.trim()) return { state: 'fail', err: t('p_test_empty') };
+    return { state: 'ok', model: data.model || '' };
+  } catch (err) {
+    return { state: 'fail', err: err.message };
+  }
+}
+
+function renderTestDetails() {
+  providerTestDetails.innerHTML = '';
+  for (const p of providerOrder) {
+    const st = providerStatus[p.id];
+    if (!st || st.state === 'testing') continue;
+    const line = document.createElement('div');
+    line.className = st.state;
+    line.textContent = st.state === 'ok'
+      ? fmt(t('p_test_ok'), { name: meta(p.id).name, model: st.model || '?' })
+      : fmt(t('p_test_fail'), { name: meta(p.id).name, err: st.err || '' });
+    providerTestDetails.appendChild(line);
+  }
+}
+
+async function runProviderTest() {
+  const chain = currentChain();
+  providerStatus = {};
+  renderTestDetails();
+
+  // Direct-key mode has no queue: the single Anthropic key is tested by Start itself.
+  if (mode !== 'proxy') {
+    providerTestDetails.textContent = t('p_test_proxy_only');
+    return;
+  }
+  const proxyUrl = proxyUrlEl.value.trim();
+  if (!proxyUrl) {
+    providerTestDetails.textContent = t('p_test_need_proxy');
+    return;
+  }
+  const proxyToken = proxyTokenEl.value.trim();
+
+  testProvidersBtn.disabled = true;
+  testProvidersBtn.textContent = t('p_test_running');
+  // Sequentially, not in parallel: a free tier that rate-limits on three simultaneous
+  // calls would report a failure that the real chain (one call at a time) never sees.
+  for (const id of chain) {
+    providerStatus[id] = { state: 'testing' };
+    renderProviderChain();
+    providerStatus[id] = await testProvider(id, proxyUrl, proxyToken);
+    renderProviderChain();
+    renderTestDetails();
+  }
+  testProvidersBtn.disabled = false;
+  testProvidersBtn.textContent = t('p_test_providers');
+}
+
+testProvidersBtn.addEventListener('click', runProviderTest);
 
 // ── Load saved config ─────────────────────────────────────────────────────────
 

@@ -9,7 +9,9 @@ let AI_PROVIDER = 'claude';
 // Ordered fallback chain of LLM providers (proxy mode). callClaude tries them in order;
 // if one errors or is out of quota, it moves to the next — like the translator's
 // Google→Groq chain. Configured in the popup (storage `aiProviderChain`).
-let AI_PROVIDERS = ['groq'];
+// Mistral leads by preference (European provider); the rest are the safety net.
+const DEFAULT_PROVIDER_CHAIN = ['mistral', 'cerebras', 'groq'];
+let AI_PROVIDERS = DEFAULT_PROVIDER_CHAIN.slice();
 // The provider that served the most recent successful LLM call. When it flips (a fallback
 // kicked in, or quota recovered) we notify the overlay so the user knows which model is
 // live — and tag key points with it for the export (basic audit trail).
@@ -38,10 +40,10 @@ async function loadKeys() {
   ANTHROPIC_KEY = data.anthropicKey || '';
   PROXY_URL = data.proxyUrl || '';
   PROXY_TOKEN = data.proxyToken || '';
-  AI_PROVIDER = data.aiProvider || 'groq';
+  AI_PROVIDER = data.aiProvider || DEFAULT_PROVIDER_CHAIN[0];
   AI_PROVIDERS = (Array.isArray(data.aiProviderChain) && data.aiProviderChain.length)
     ? data.aiProviderChain
-    : [AI_PROVIDER];
+    : (data.aiProvider ? [data.aiProvider] : DEFAULT_PROVIDER_CHAIN.slice());
   SOURCE_LANGUAGE = data.sourceLanguage || 'auto';
   PARTICIPANTS = data.participants || '';
   NEG_EXAMPLES = Array.isArray(data.feedbackNegative) ? data.feedbackNegative : [];
@@ -75,7 +77,7 @@ browser.storage.onChanged.addListener(async (changes, area) => {
   if (changes.aiProviderChain) {
     AI_PROVIDERS = (Array.isArray(changes.aiProviderChain.newValue) && changes.aiProviderChain.newValue.length)
       ? changes.aiProviderChain.newValue
-      : [AI_PROVIDER];
+      : DEFAULT_PROVIDER_CHAIN.slice();
   }
   if (changes.aiProvider && typeof changes.aiProvider.newValue === 'string') {
     AI_PROVIDER = changes.aiProvider.newValue;
@@ -300,6 +302,31 @@ function setActiveProvider(provider) {
   if (activeTabId) sendToTab(activeTabId, { type: 'MODEL_CHANGED', provider, previous });
 }
 
+// Key-point extraction and translation call the chain SILENTLY, because a single
+// transient failure is normal and a red toast every window would be noise. But when the
+// whole chain fails over and over (a retired model id, a dead proxy) that silence hides
+// a session that will never produce a key point again — so an outage is announced once,
+// and so is the recovery.
+const CHAIN_OUTAGE_AFTER = 3; // consecutive all-providers-failed calls
+let chainFailureStreak = 0;
+let chainOutageReported = false;
+
+function noteChainSuccess() {
+  chainFailureStreak = 0;
+  if (chainOutageReported) {
+    chainOutageReported = false;
+    if (activeTabId) sendToTab(activeTabId, { type: 'PIPELINE_INFO', message: t('bg_llm_recovered') });
+  }
+}
+
+// Returns true when this failure should be shown even to a silent caller.
+function noteChainFailure() {
+  chainFailureStreak++;
+  if (chainOutageReported || chainFailureStreak < CHAIN_OUTAGE_AFTER) return false;
+  chainOutageReported = true;
+  return true;
+}
+
 // Parse a proxy response body into our {text, sources} shape (empty text = failure).
 function parseLLMResponse(data) {
   const raw = data?.content?.[0]?.text?.trim() || '';
@@ -311,7 +338,7 @@ async function callClaude(userMessage, systemPrompt, grounded = false, maxTokens
   // Direct Anthropic key path (no proxy) stays single-provider.
   if (!PROXY_URL) {
     if (!ANTHROPIC_KEY) {
-      if (!silent && activeTabId) sendToTab(activeTabId, { type: 'PIPELINE_ERROR', message: 'No API key or proxy configured.' });
+      if (!silent && activeTabId) sendToTab(activeTabId, { type: 'PIPELINE_ERROR', message: t('bg_llm_no_key') });
       return { text: '', sources: [] };
     }
     try {
@@ -333,13 +360,14 @@ async function callClaude(userMessage, systemPrompt, grounded = false, maxTokens
       });
       const data = await res.json();
       if (data.error) {
-        if (!silent && activeTabId) sendToTab(activeTabId, { type: 'PIPELINE_ERROR', message: data.error.message || 'API error' });
+        if (!silent && activeTabId) sendToTab(activeTabId, { type: 'PIPELINE_ERROR', message: fmt(t('bg_llm_api_error'), { detail: data.error.message || 'API error' }) });
         return { text: '', sources: [] };
       }
       setActiveProvider('claude');
+      noteChainSuccess();
       return parseLLMResponse(data);
     } catch (err) {
-      if (!silent && activeTabId) sendToTab(activeTabId, { type: 'PIPELINE_ERROR', message: err.message });
+      if (!silent && activeTabId) sendToTab(activeTabId, { type: 'PIPELINE_ERROR', message: fmt(t('bg_llm_api_error'), { detail: err.message }) });
       return { text: '', sources: [] };
     }
   }
@@ -349,8 +377,11 @@ async function callClaude(userMessage, systemPrompt, grounded = false, maxTokens
   // quota/rate limit on one model doesn't kill the session mid-event.
   const proxyHeaders = { 'Content-Type': 'application/json' };
   if (PROXY_TOKEN) proxyHeaders['x-proxy-token'] = PROXY_TOKEN;
-  const chain = AI_PROVIDERS.length ? AI_PROVIDERS : ['groq'];
-  let lastErr = '';
+  const chain = AI_PROVIDERS.length ? AI_PROVIDERS : DEFAULT_PROVIDER_CHAIN.slice();
+  // One entry per provider that failed. Reporting only the LAST error made the toast
+  // look like the last model in the chain was the only one tried (and hid, for example,
+  // that a retired model id had killed every provider at once).
+  const failures = [];
 
   for (const provider of chain) {
     try {
@@ -373,27 +404,37 @@ async function callClaude(userMessage, systemPrompt, grounded = false, maxTokens
       });
       const data = await res.json();
       if (!res.ok || data.error) {
-        lastErr = data.error?.message || ('HTTP ' + res.status);
-        console.warn(`[claude] provider "${provider}" failed: ${lastErr} — trying next`);
+        const err = data.error?.message || ('HTTP ' + res.status);
+        failures.push({ provider, err });
+        console.warn(`[claude] provider "${provider}" failed: ${err} — trying next`);
         continue;
       }
       const parsed = parseLLMResponse(data);
       if (!parsed.text) {
-        lastErr = 'empty response';
+        failures.push({ provider, err: 'empty response' });
         console.warn(`[claude] provider "${provider}" returned empty — trying next`);
         continue;
       }
       setActiveProvider(provider);
+      noteChainSuccess();
       return parsed;
     } catch (err) {
-      lastErr = err.message;
-      console.warn(`[claude] provider "${provider}" threw: ${lastErr} — trying next`);
+      failures.push({ provider, err: err.message });
+      console.warn(`[claude] provider "${provider}" threw: ${err.message} — trying next`);
     }
   }
 
-  // Every provider in the chain failed.
-  console.error('[claude] all providers failed:', lastErr);
-  if (!silent && activeTabId) sendToTab(activeTabId, { type: 'PIPELINE_ERROR', message: lastErr || 'All AI models failed' });
+  // Every provider in the chain failed. The detail stays in the provider's own words
+  // (it names the model/quota that broke), but the sentence around it is translated.
+  const detail = failures.map(f => `${providerLabel(f.provider)}: ${f.err}`).join(' · ');
+  console.error('[claude] all providers failed:', detail);
+  const outage = noteChainFailure();
+  if ((!silent || outage) && activeTabId) {
+    sendToTab(activeTabId, {
+      type: 'PIPELINE_ERROR',
+      message: detail ? fmt(t('bg_llm_all_failed'), { detail }) : t('bg_llm_none'),
+    });
+  }
   return { text: '', sources: [] };
 }
 
