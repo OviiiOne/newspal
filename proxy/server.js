@@ -7,6 +7,18 @@ const GROQ_KEY = process.env.GROQ_API_KEY || '';
 const MISTRAL_KEY = process.env.MISTRAL_API_KEY || '';
 const CEREBRAS_KEY = process.env.CEREBRAS_API_KEY || '';
 const GLADIA_KEY = process.env.GLADIA_API_KEY || '';
+
+// Pinning a model id is a trap: hosted models get RETIRED without notice, the API then
+// answers "the model does not exist or you do not have access to it", and because the
+// client walks a fallback chain a single retirement can break every provider at once.
+// So the model is DISCOVERED instead — each provider's GET /v1/models lists exactly what
+// this key may call, and we pick the best one there. An env var still overrides it
+// (GROQ_MODEL / MISTRAL_MODEL / CEREBRAS_MODEL) for pinning a specific model on purpose.
+const MODEL_OVERRIDES = {
+  groq: process.env.GROQ_MODEL || '',
+  mistral: process.env.MISTRAL_MODEL || '',
+  cerebras: process.env.CEREBRAS_MODEL || '',
+};
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
 const PROXY_TOKEN = process.env.PROXY_TOKEN || '';
 const PORT = process.env.PORT || 3000;
@@ -112,55 +124,229 @@ async function handleGemini(body) {
   return { status: 200, data: fromGeminiResponse(raw) };
 }
 
+// ── Model discovery ───────────────────────────────────────────────────────────
+// Groq, Mistral and Cerebras all expose the OpenAI-style GET /v1/models, which lists
+// what THIS key can actually call right now. We list it, drop everything that isn't a
+// general chat model, and RANK the rest by a per-provider preference order.
+//
+// The result is a ranked list, not a single pick, because the listing says which models
+// exist but nothing about what they cost us: rate limits are not in the API, only in the
+// provider's dashboard. A brand-new flagship can turn up with a rate limit so low it is
+// useless (Mistral's own free tier has shipped a model at 20k tokens/minute). So the
+// fallback runs at the MODEL level first — best model, next model, next — and only when
+// a provider has nothing left does the client's chain move on to the next provider.
+
+const OPENAI_COMPAT = {
+  groq: {
+    base: 'https://api.groq.com/openai/v1', key: GROQ_KEY, label: 'Groq',
+    // Only reachable on a paid tier — see the free-tier 413 note below.
+    groundedModel: 'groq/compound',
+    prefer: [/^openai\/gpt-oss-120b$/, /gpt-oss-120b/, /^qwen/, /70b/, /gpt-oss/],
+    fallback: 'openai/gpt-oss-120b',
+  },
+  mistral: {
+    base: 'https://api.mistral.ai/v1', key: MISTRAL_KEY, label: 'Mistral',
+    // A DATED large before a "-latest" large: an alias silently becomes the newest
+    // model, and on a free tier the newest is exactly the one whose rate limit hasn't
+    // been raised yet. Same for medium. (2026-09: large 250k TPM, medium-latest 20k.)
+    prefer: [/^mistral-large-\d/, /^mistral-large/, /^mistral-medium-\d/, /^mistral-medium/,
+             /^ministral-14b/, /^mistral-small/, /^ministral-8b/],
+    fallback: 'mistral-large-2512',
+  },
+  cerebras: {
+    base: 'https://api.cerebras.ai/v1', key: CEREBRAS_KEY, label: 'Cerebras',
+    prefer: [/^gpt-oss-120b$/, /gpt-oss-120b/, /qwen.*235b/, /^qwen/, /^zai-glm/, /70b/],
+    fallback: 'gpt-oss-120b',
+  },
+};
+
+// Ids that are not general-purpose chat models: embeddings, moderation, speech, OCR,
+// code-only and experimental families. They show up in the same listing.
+const NON_CHAT_MODEL = /(embed|moderation|guard|whisper|tts|transcribe|voxtral|ocr|rerank|codestral|devstral|labs-)/i;
+
+const MODEL_TTL_MS = 6 * 60 * 60 * 1000; // re-read the catalogue twice a day
+const MODEL_ATTEMPTS = 3;                // models to try per request before giving up
+const MODEL_COOLDOWN_MS = 5 * 60 * 1000; // how long a model that just failed is skipped
+
+const modelCache = {};   // provider -> { ranked: [id], at }
+const modelCooldown = {}; // "provider:model" -> timestamp it becomes usable again
+
+async function listChatModels(cfg) {
+  const res = await fetch(cfg.base + '/models', {
+    headers: { 'Authorization': 'Bearer ' + cfg.key },
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const raw = await res.json();
+  const items = Array.isArray(raw?.data) ? raw.data : [];
+  return items
+    .filter(m => {
+      if (!m || typeof m.id !== 'string' || NON_CHAT_MODEL.test(m.id)) return false;
+      // Mistral reports per-model capabilities; honour them when the field exists.
+      if (m.capabilities && m.capabilities.completion_chat === false) return false;
+      return true;
+    })
+    .map(m => m.id);
+}
+
+// Best first. Anything the preference list doesn't recognise still makes the list, last —
+// an unknown model is worth trying before failing the request outright.
+function rankModels(cfg, ids) {
+  const rank = id => {
+    const i = cfg.prefer.findIndex(re => re.test(id));
+    return i === -1 ? cfg.prefer.length : i;
+  };
+  return ids.slice().sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+}
+
+async function rankedModels(provider) {
+  const override = MODEL_OVERRIDES[provider];
+  if (override) return [override]; // pinned on purpose — never look it up, never fall back
+
+  const cached = modelCache[provider];
+  if (cached && Date.now() - cached.at < MODEL_TTL_MS) return cached.ranked;
+
+  const cfg = OPENAI_COMPAT[provider];
+  try {
+    const ranked = rankModels(cfg, await listChatModels(cfg));
+    if (!ranked.length) throw new Error('no chat models listed');
+    modelCache[provider] = { ranked, at: Date.now() };
+    console.log(`[models] ${provider} → ${ranked.slice(0, MODEL_ATTEMPTS).join(' → ')} (${ranked.length} available)`);
+    return ranked;
+  } catch (err) {
+    // The listing is a convenience, never a hard dependency: if it is down we still
+    // answer, with the last known good ranking or the built-in default.
+    const ranked = cached?.ranked || [cfg.fallback];
+    console.warn(`[models] ${provider} listing failed (${err.message}) — using ${ranked[0]}`);
+    return ranked;
+  }
+}
+
+// The models to try for one request: best first, skipping any that failed recently. If
+// everything is cooling down we ignore the cooldowns rather than refuse to answer.
+function candidateModels(provider, ranked) {
+  const now = Date.now();
+  const fresh = ranked.filter(id => !(modelCooldown[provider + ':' + id] > now));
+  return (fresh.length ? fresh : ranked).slice(0, MODEL_ATTEMPTS);
+}
+
+// A retired model id. Providers word it differently, so match the shape, not the text.
+function isModelGone(status, message) {
+  if (status === 404) return true;
+  return /model.*(does not exist|not exist|not found|no longer|decommissioned|deprecated|unavailable)/i
+    .test(message || '');
+}
+
+// Is another MODEL of the same provider worth a try? Yes when the problem is this model
+// (retired, rate-limited, too small for the request, upstream hiccup). No when it is the
+// account or the request itself — a bad key or a malformed body fails identically on all.
+function worthAnotherModel(status, message) {
+  if (isModelGone(status, message)) return true;
+  if (status === 429 || status === 413) return true;
+  return status >= 500;
+}
+
 // Generic handler for OpenAI-compatible chat APIs (Groq, Mistral, Cerebras all speak
-// the same /chat/completions dialect). `label` is only for error messages.
-async function handleOpenAICompat({ endpoint, key, model, groundedModel, label }, body) {
+// the same /chat/completions dialect).
+async function handleOpenAICompat(provider, body) {
+  const cfg = OPENAI_COMPAT[provider];
   const { max_tokens, temperature, system, messages, grounded, json } = body;
-  const useModel = (grounded && groundedModel) ? groundedModel : model;
 
   const msgs = [];
   if (system) msgs.push({ role: 'system', content: system });
   for (const m of messages) {
     msgs.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content });
   }
-
-  const reqBody = {
-    model: useModel,
+  const baseBody = {
     messages: msgs,
     temperature: temperature ?? 0,
     max_tokens: Math.min(max_tokens || 768, 4096),
   };
-  // Force valid JSON for structured calls (key points). Never with a search model.
-  if (json && !grounded) reqBody.response_format = { type: 'json_object' };
 
-  const call = (b) => fetch(endpoint, {
+  const call = (b) => fetch(cfg.base + '/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + cfg.key },
     body: JSON.stringify(b),
   });
 
-  let response = await call(reqBody);
-  let raw = await response.json();
-  // JSON mode can fail ("Failed to generate JSON"); retry once as plain text — the
-  // prompt still asks for JSON and the client parses leniently.
-  if (!response.ok && reqBody.response_format) {
-    delete reqBody.response_format;
-    response = await call(reqBody);
-    raw = await response.json();
-  }
-  if (!response.ok) {
-    return { status: response.status, data: { error: { message: raw.error?.message || raw.message || (label + ' API error') } } };
+  // One model, including the JSON-mode retry. Returns the raw response + parsed body.
+  async function tryModel(model) {
+    const reqBody = { ...baseBody, model };
+    // Force valid JSON for structured calls (key points). Never with a search model.
+    if (json && !grounded) reqBody.response_format = { type: 'json_object' };
+
+    let response = await call(reqBody);
+    let raw = await response.json().catch(() => ({}));
+    let message = raw?.error?.message || raw?.message || '';
+    // JSON mode can fail ("Failed to generate JSON"); retry once as plain text — the
+    // prompt still asks for JSON and the client parses leniently. Only when the error is
+    // actually about JSON: retrying a rate limit or a retired model here would just
+    // double every call on the way down the fallback list.
+    if (!response.ok && reqBody.response_format && /json|response_format|schema/i.test(message)) {
+      delete reqBody.response_format;
+      response = await call(reqBody);
+      raw = await response.json().catch(() => ({}));
+      message = raw?.error?.message || raw?.message || '';
+    }
+    return { response, raw, message };
   }
 
-  const msg = raw.choices?.[0]?.message || {};
-  const text = msg.content || '';
-  // Groq compound models report what they searched; pull source URLs when present.
-  const sources = [];
-  for (const t of (msg.executed_tools || [])) {
-    const results = t?.search_results?.results || t?.results || [];
-    for (const r of results) { if (r && r.url) sources.push(r.url); }
+  function success(model, raw) {
+    const msg = raw.choices?.[0]?.message || {};
+    // Groq compound models report what they searched; pull source URLs when present.
+    const sources = [];
+    for (const t of (msg.executed_tools || [])) {
+      const results = t?.search_results?.results || t?.results || [];
+      for (const r of results) { if (r && r.url) sources.push(r.url); }
+    }
+    return {
+      status: 200,
+      data: { content: [{ type: 'text', text: msg.content || '' }], model, stop_reason: 'end_turn', sources },
+    };
   }
-  return { status: 200, data: { content: [{ type: 'text', text }], model: useModel, stop_reason: 'end_turn', sources } };
+
+  // Grounded search runs on one fixed model; there is nothing to fall back to.
+  if (grounded && cfg.groundedModel) {
+    const { response, raw, message } = await tryModel(cfg.groundedModel);
+    if (!response.ok) return { status: response.status, data: { error: { message: message || (cfg.label + ' API error') } } };
+    return success(cfg.groundedModel, raw);
+  }
+
+  let ranked = await rankedModels(provider);
+  let queue = candidateModels(provider, ranked);
+  const tried = new Set();
+  let last = { status: 502, data: { error: { message: cfg.label + ': no model to try' } } };
+  let relisted = false;
+
+  while (queue.length) {
+    const model = queue.shift();
+    if (tried.has(model)) continue;
+    tried.add(model);
+
+    const { response, raw, message } = await tryModel(model);
+    if (response.ok) {
+      delete modelCooldown[provider + ':' + model];
+      return success(model, raw);
+    }
+
+    last = { status: response.status, data: { error: { message: message || (cfg.label + ' API error') } } };
+    if (!worthAnotherModel(response.status, message)) break;
+
+    // This model is the problem, not the account — stop picking it for a few minutes so
+    // the next calls don't pay for the same failure again.
+    modelCooldown[provider + ':' + model] = Date.now() + MODEL_COOLDOWN_MS;
+    console.warn(`[models] ${provider}: "${model}" failed (${response.status}: ${message}) — next model`);
+
+    // A retirement means our cached catalogue is stale, so the rest of the queue may be
+    // stale too. Re-read it once and carry on with what it now offers.
+    if (isModelGone(response.status, message) && !relisted && !MODEL_OVERRIDES[provider]) {
+      relisted = true;
+      delete modelCache[provider];
+      ranked = await rankedModels(provider);
+      queue = candidateModels(provider, ranked).filter(id => !tried.has(id));
+    }
+  }
+
+  return last;
 }
 
 // NOTE: Groq's web search does NOT work on the FREE tier. When a compound model
@@ -168,31 +354,18 @@ async function handleOpenAICompat({ endpoint, key, model, groundedModel, label }
 // free-tier per-request token limit → 413 request_too_large. So grounded verification
 // is currently DISABLED client-side; groundedModel is only reachable on a paid tier.
 function handleGroq(body) {
-  return handleOpenAICompat({
-    endpoint: 'https://api.groq.com/openai/v1/chat/completions',
-    key: GROQ_KEY, model: 'llama-3.3-70b-versatile', groundedModel: 'groq/compound', label: 'Groq',
-  }, body);
+  return handleOpenAICompat('groq', body);
 }
 
-// Mistral "La Plateforme" free "Experiment" tier. Use the "-latest" alias, NOT a dated id:
-// dated ids (e.g. mistral-medium-2505) get more generous free-tier rate limits but WILL be
-// retired eventually (maintenance burden). medium-latest self-updates and its ~25k TPM /
-// 0.83 rps is enough for our ~2-4 chain calls/min; bursts that exceed it just fall back to
-// Cerebras via the client queue. (Avoid large-latest: its free rate limit is far tighter.)
+// Mistral "La Plateforme", free "Experiment" tier.
 function handleMistral(body) {
-  return handleOpenAICompat({
-    endpoint: 'https://api.mistral.ai/v1/chat/completions',
-    key: MISTRAL_KEY, model: 'mistral-medium-latest', label: 'Mistral',
-  }, body);
+  return handleOpenAICompat('mistral', body);
 }
 
-// Cerebras inference — free tier with very high token limits (good fallback when Groq's
-// per-day quota is exhausted mid-event). Serves Llama 3.3 70B at high speed.
+// Cerebras inference — free tier with very high token limits, a good fallback for when
+// Mistral runs out of tokens per minute mid-event.
 function handleCerebras(body) {
-  return handleOpenAICompat({
-    endpoint: 'https://api.cerebras.ai/v1/chat/completions',
-    key: CEREBRAS_KEY, model: 'llama-3.3-70b', label: 'Cerebras',
-  }, body);
+  return handleOpenAICompat('cerebras', body);
 }
 
 app.post('/', async (req, res) => {
@@ -257,16 +430,39 @@ app.post('/gladia/live', async (req, res) => {
   }
 });
 
-app.get('/health', (req, res) => {
+// Open (no token) so the resolved models can be checked from a browser: this is what
+// says which model each provider is actually using, and whether it was discovered or
+// pinned with an env var.
+app.get('/health', async (req, res) => {
   const providers = [];
-  if (GROQ_KEY) providers.push('groq');
-  if (CEREBRAS_KEY) providers.push('cerebras');
-  if (MISTRAL_KEY) providers.push('mistral');
+  const models = {};
+  const configured = { groq: !!GROQ_KEY, cerebras: !!CEREBRAS_KEY, mistral: !!MISTRAL_KEY };
+  const now = Date.now();
+  for (const provider of ['groq', 'cerebras', 'mistral']) {
+    if (!configured[provider]) continue;
+    providers.push(provider);
+    const ranked = await rankedModels(provider);
+    const queue = candidateModels(provider, ranked);
+    models[provider] = {
+      using: queue[0],
+      then: queue.slice(1),
+      source: MODEL_OVERRIDES[provider] ? 'env' : 'auto',
+      // Models parked after a recent failure, with the seconds left on each.
+      cooling: ranked
+        .filter(id => modelCooldown[provider + ':' + id] > now)
+        .map(id => `${id} (${Math.round((modelCooldown[provider + ':' + id] - now) / 1000)}s)`),
+    };
+  }
   if (ANTHROPIC_KEY) providers.push('claude');
   if (GEMINI_KEY) providers.push('gemini');
-  res.json({ status: 'ok', providers, gladia: !!GLADIA_KEY });
+  res.json({ status: 'ok', providers, models, gladia: !!GLADIA_KEY });
 });
 
 app.listen(PORT, () => {
   console.log(`NewsPal proxy running on port ${PORT}`);
+  // Warm the model rankings so the first real call doesn't pay for the listing, and so
+  // the deploy logs record what each provider resolved to. Never blocks startup.
+  for (const provider of ['groq', 'cerebras', 'mistral']) {
+    if (OPENAI_COMPAT[provider].key) rankedModels(provider).catch(() => {});
+  }
 });
