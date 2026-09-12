@@ -247,9 +247,14 @@ function isModelGone(status, message) {
 // Is another MODEL of the same provider worth a try? Yes when the problem is this model
 // (retired, rate-limited, too small for the request, upstream hiccup). No when it is the
 // account or the request itself — a bad key or a malformed body fails identically on all.
+//
+// 402/403 belong in the first group, not the second: providers gate individual models
+// behind a paid plan while leaving others open, so "payment required to access this
+// resource" is about the resource. Cerebras answers exactly that for its Production
+// gpt-oss-120b on an account whose qwen quota is wide open.
 function worthAnotherModel(status, message) {
   if (isModelGone(status, message)) return true;
-  if (status === 429 || status === 413) return true;
+  if (status === 429 || status === 413 || status === 402 || status === 403) return true;
   return status >= 500;
 }
 
