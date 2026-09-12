@@ -84,13 +84,19 @@ On [Railway](https://railway.app) (free tier is enough):
 2. Railway → *New Project* → *Deploy from GitHub repo* → pick your fork and branch.
 3. In the service settings set **Root Directory** to `proxy`.
 4. Add the environment variables:
-   - `GROQ_API_KEY` — free at [console.groq.com](https://console.groq.com) (default provider)
+   - `MISTRAL_API_KEY` — free "Experiment" tier at
+     [console.mistral.ai](https://console.mistral.ai) (first provider in the queue)
    - `GLADIA_API_KEY` — free 10h/month at [gladia.io](https://gladia.io) (real-time transcription)
    - `PROXY_TOKEN` — any long random string; the extension popup must send the same one
    - optional (free fallback models for the provider queue): `CEREBRAS_API_KEY`
-     ([cloud.cerebras.ai](https://cloud.cerebras.ai)) and `MISTRAL_API_KEY`
-     ([console.mistral.ai](https://console.mistral.ai), free "Experiment" tier)
+     ([cloud.cerebras.ai](https://cloud.cerebras.ai)) and `GROQ_API_KEY`
+     ([console.groq.com](https://console.groq.com))
    - optional: `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` if you use those providers
+   - optional model pins — `MISTRAL_MODEL`, `CEREBRAS_MODEL`, `GROQ_MODEL`. Normally
+     you don't need these: the proxy asks each provider which models the key can call
+     (`GET /v1/models`) and picks the best available one, so a retired model heals
+     itself instead of breaking the whole queue. Set a variable only to force one
+     specific model. `GET /health` reports what each provider resolved to.
    - do **not** set `ALLOWED_ORIGIN` (it must stay `*` for a browser extension)
 5. Generate a public domain (*Settings → Networking*) and put that URL plus your
    `PROXY_TOKEN` in the popup, Proxy mode.
