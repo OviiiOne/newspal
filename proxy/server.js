@@ -229,12 +229,16 @@ async function rankedModels(provider) {
   }
 }
 
-// The models to try for one request: best first, skipping any that failed recently. If
-// everything is cooling down we ignore the cooldowns rather than refuse to answer.
+// The models to try for one request: best first, skipping any that failed recently.
 function candidateModels(provider, ranked) {
   const now = Date.now();
   const fresh = ranked.filter(id => !(modelCooldown[provider + ':' + id] > now));
-  return (fresh.length ? fresh : ranked).slice(0, MODEL_ATTEMPTS);
+  // Everything is cooling down — which is what a provider that is down account-wide looks
+  // like (Cerebras answers 402 for every model once billing lapses). Still give it a
+  // chance rather than refusing outright, but only ONE: walking the full list would cost
+  // three round trips on every single call, in the middle of a live press conference.
+  if (!fresh.length) return ranked.slice(0, 1);
+  return fresh.slice(0, MODEL_ATTEMPTS);
 }
 
 // A retired model id. Providers word it differently, so match the shape, not the text.
