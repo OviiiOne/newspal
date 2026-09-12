@@ -308,10 +308,29 @@ async function rankedModels(provider) {
   }
 }
 
-// The models to try for one request: best first, skipping any that failed recently.
+// The family a model belongs to, i.e. its id without the trailing version, date or
+// "latest" alias: mistral-medium-2604, mistral-medium-3-5 and mistral-medium-latest are
+// all "mistral-medium". Sizes stay apart, so ministral-14b and ministral-8b differ.
+function familyOf(id) {
+  return id.replace(/[-_.]?(latest|\d[\d.\-]*)$/i, '').replace(/[-_.]+$/, '') || id;
+}
+
+// The models to try for one request: best first, skipping any that failed recently, and
+// at most ONE per family. Four spellings of the same model answer the same way — a free
+// plan refuses every mistral-medium alike — so trying them all just burns the attempt
+// budget before reaching a model that is actually different. One per family means the
+// three attempts span three real alternatives.
 function candidateModels(provider, ranked) {
   const now = Date.now();
-  const fresh = ranked.filter(id => !cooldownLeft(provider, id, now));
+  const seen = new Set();
+  const fresh = ranked.filter(id => {
+    const family = familyOf(id);
+    if (seen.has(family)) return false;
+    // The best-ranked member represents its family, cooling down included: if that one
+    // was just refused, a sibling alias of the same model would be refused too.
+    seen.add(family);
+    return !cooldownLeft(provider, id, now);
+  });
   // Everything is cooling down — which is what a provider that is down account-wide looks
   // like (Cerebras answers 402 for every model once billing lapses). Still give it a
   // chance rather than refusing outright, but only ONE: walking the full list would cost
