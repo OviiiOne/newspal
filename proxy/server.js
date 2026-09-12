@@ -168,6 +168,14 @@ const MODEL_TTL_MS = 6 * 60 * 60 * 1000; // re-read the catalogue twice a day
 const MODEL_ATTEMPTS = 3;                // models to try per request before giving up
 const MODEL_COOLDOWN_MS = 5 * 60 * 1000; // how long a model that just failed is skipped
 
+// Reasoning models think before answering and that thinking is charged to the SAME token
+// budget, without ever appearing in `content`. Groq documents gpt-oss returning an empty
+// content when max_tokens is under ~1000 — and an empty answer is exactly what the client
+// reads as "this provider failed". The families every provider now serves reason by
+// default, so small calls (the ⭐ manual key point asks for 512) need a floor.
+const REASONING_MODEL = /(gpt-oss|qwen|glm|deepseek|magistral|thinking|reason)/i;
+const REASONING_MIN_TOKENS = 1200;
+
 const modelCache = {};   // provider -> { ranked: [id], at }
 const modelCooldown = {}; // "provider:model" -> timestamp it becomes usable again
 
@@ -271,6 +279,9 @@ async function handleOpenAICompat(provider, body) {
   // One model, including the JSON-mode retry. Returns the raw response + parsed body.
   async function tryModel(model) {
     const reqBody = { ...baseBody, model };
+    if (REASONING_MODEL.test(model)) {
+      reqBody.max_tokens = Math.max(reqBody.max_tokens, REASONING_MIN_TOKENS);
+    }
     // Force valid JSON for structured calls (key points). Never with a search model.
     if (json && !grounded) reqBody.response_format = { type: 'json_object' };
 
@@ -323,9 +334,20 @@ async function handleOpenAICompat(provider, body) {
     tried.add(model);
 
     const { response, raw, message } = await tryModel(model);
-    if (response.ok) {
+    const text = response.ok ? (raw.choices?.[0]?.message?.content || '').trim() : '';
+    if (response.ok && text) {
       delete modelCooldown[provider + ':' + model];
       return success(model, raw);
+    }
+
+    // A 200 with no content is a failure of THIS model, not of the request: a reasoning
+    // model can spend the whole budget thinking and answer nothing. The client would
+    // read it as a dead provider, so fall through to the next model here instead.
+    if (response.ok) {
+      last = { status: 502, data: { error: { message: `${cfg.label}: "${model}" returned no content` } } };
+      modelCooldown[provider + ':' + model] = Date.now() + MODEL_COOLDOWN_MS;
+      console.warn(`[models] ${provider}: "${model}" returned empty content — next model`);
+      continue;
     }
 
     last = { status: response.status, data: { error: { message: message || (cfg.label + ' API error') } } };

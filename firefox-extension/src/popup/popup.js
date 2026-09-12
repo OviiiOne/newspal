@@ -260,7 +260,9 @@ async function testProvider(provider, proxyUrl, proxyToken) {
         provider,
         model: provider === 'gemini' ? 'gemini-2.0-flash'
              : provider === 'claude' ? 'claude-haiku-4-5-20251001' : undefined,
-        max_tokens: 16,
+        // Not 16: a reasoning model spends the budget thinking and answers nothing,
+        // which would report a healthy provider as broken.
+        max_tokens: 1200,
         temperature: 0,
         system: 'Reply with the single word OK.',
         messages: [{ role: 'user', content: 'ping' }],
