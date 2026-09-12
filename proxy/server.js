@@ -189,7 +189,13 @@ const NON_CHAT_MODEL = /(embed|moderation|guard|whisper|tts|transcribe|voxtral|o
 
 const MODEL_TTL_MS = 6 * 60 * 60 * 1000; // re-read the catalogue twice a day
 const MODEL_ATTEMPTS = 3;                // models to try per request before giving up
-const MODEL_COOLDOWN_MS = 5 * 60 * 1000; // how long a model that just failed is skipped
+// How long a model that just failed is skipped, doubling each time it fails again. A
+// rate limit clears in minutes, but "this plan can't use this model" never clears: a free
+// Mistral plan answers 429 for every medium model and 403 for large, for ever. A fixed
+// cooldown would re-test those every few minutes for the whole press conference, so
+// repeat offenders get parked for longer and longer, up to an hour.
+const MODEL_COOLDOWN_MS = 5 * 60 * 1000;
+const MODEL_COOLDOWN_MAX_MS = 60 * 60 * 1000;
 
 // Reasoning models think before answering and that thinking is charged to the SAME token
 // budget, without ever appearing in `content`. Groq documents gpt-oss returning an empty
@@ -199,8 +205,25 @@ const MODEL_COOLDOWN_MS = 5 * 60 * 1000; // how long a model that just failed is
 const REASONING_MODEL = /(gpt-oss|qwen|glm|deepseek|magistral|thinking|reason)/i;
 const REASONING_MIN_TOKENS = 1200;
 
-const modelCache = {};   // provider -> { ranked: [id], at }
-const modelCooldown = {}; // "provider:model" -> timestamp it becomes usable again
+const modelCache = {};    // provider -> { ranked: [id], at }
+const modelCooldown = {}; // "provider:model" -> { until, strikes }
+
+function cooldownLeft(provider, model, now) {
+  const c = modelCooldown[provider + ':' + model];
+  return (c && c.until > now) ? c.until - now : 0;
+}
+
+function parkModel(provider, model, why) {
+  const k = provider + ':' + model;
+  const strikes = (modelCooldown[k]?.strikes || 0) + 1;
+  const ms = Math.min(MODEL_COOLDOWN_MS * Math.pow(2, strikes - 1), MODEL_COOLDOWN_MAX_MS);
+  modelCooldown[k] = { until: Date.now() + ms, strikes };
+  console.warn(`[models] ${provider}: "${model}" ${why} — parked ${Math.round(ms / 1000)}s`);
+}
+
+function unparkModel(provider, model) {
+  delete modelCooldown[provider + ':' + model];
+}
 
 // Google's catalogue: a different shape, and it states per model which methods it
 // supports — the authoritative way to keep embedding/image/audio models out.
@@ -288,7 +311,7 @@ async function rankedModels(provider) {
 // The models to try for one request: best first, skipping any that failed recently.
 function candidateModels(provider, ranked) {
   const now = Date.now();
-  const fresh = ranked.filter(id => !(modelCooldown[provider + ':' + id] > now));
+  const fresh = ranked.filter(id => !cooldownLeft(provider, id, now));
   // Everything is cooling down — which is what a provider that is down account-wide looks
   // like (Cerebras answers 402 for every model once billing lapses). Still give it a
   // chance rather than refusing outright, but only ONE: walking the full list would cost
@@ -337,7 +360,7 @@ async function withModelFallback(provider, label, attempt) {
 
     const { ok, status, message, text, result } = await attempt(model);
     if (ok && text) {
-      delete modelCooldown[provider + ':' + model];
+      unparkModel(provider, model);
       return result;
     }
 
@@ -346,18 +369,16 @@ async function withModelFallback(provider, label, attempt) {
     // read it as a dead provider, so fall through to the next model here instead.
     if (ok) {
       last = { status: 502, data: { error: { message: `${label}: "${model}" returned no content` } } };
-      modelCooldown[provider + ':' + model] = Date.now() + MODEL_COOLDOWN_MS;
-      console.warn(`[models] ${provider}: "${model}" returned empty content — next model`);
+      parkModel(provider, model, 'returned empty content');
       continue;
     }
 
     last = { status, data: { error: { message: message || (label + ' API error') } } };
     if (!worthAnotherModel(status, message)) break;
 
-    // This model is the problem, not the account — stop picking it for a few minutes so
-    // the next calls don't pay for the same failure again.
-    modelCooldown[provider + ':' + model] = Date.now() + MODEL_COOLDOWN_MS;
-    console.warn(`[models] ${provider}: "${model}" failed (${status}: ${message}) — next model`);
+    // This model is the problem, not the account — stop picking it so the next calls
+    // don't pay for the same failure again.
+    parkModel(provider, model, `failed (${status}: ${message})`);
 
     // A retirement means our cached catalogue is stale, so the rest of the queue may be
     // stale too. Re-read it once and carry on with what it now offers.
@@ -547,8 +568,8 @@ app.get('/health', async (req, res) => {
       source: MODEL_OVERRIDES[provider] ? 'env' : 'auto',
       // Models parked after a recent failure, with the seconds left on each.
       cooling: ranked
-        .filter(id => modelCooldown[provider + ':' + id] > now)
-        .map(id => `${id} (${Math.round((modelCooldown[provider + ':' + id] - now) / 1000)}s)`),
+        .filter(id => cooldownLeft(provider, id, now))
+        .map(id => `${id} (${Math.round(cooldownLeft(provider, id, now) / 1000)}s)`),
     };
   }
   if (ANTHROPIC_KEY) providers.push('claude');
