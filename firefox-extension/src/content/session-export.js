@@ -146,7 +146,11 @@ function buildSummaryInput() {
     });
     return t('ex_title_label') + ' ' + title + '\n\n' + t('ex_kp_label') + '\n' + lines.join('\n');
   }
-  const tr = transcriptLog.map(x => x.translation || x.text).join(' ');
+  // What was actually SAID — never the translations. The summary prompt already writes in
+  // the UI language, and an AI translation can rewrite content: preferring translations
+  // put a name the translator had invented straight into a summary. Model-change markers
+  // have no text and used to be joined in as the literal word "undefined".
+  const tr = transcriptLog.filter(x => !x.modelChange && x.text).map(x => x.text).join(' ');
   return t('ex_title_label') + ' ' + title + '\n\n' + t('ex_tr_label') + '\n' + tr.slice(0, 8000);
 }
 

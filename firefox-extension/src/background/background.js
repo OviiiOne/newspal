@@ -219,7 +219,7 @@ ONLY if the input explicitly marks points as "[${L.verifiedMarker}: ...]", you m
 
 Mind the temporal context: if a point is a historical reference or a retelling of past events, present it as such — NEVER turn history into current events, plans or threats, and never infer intentions beyond what was literally said.
 
-Be concise and neutral. Report only what was said; do not assess truth yourself. Return only the summary text.`;
+Be concise and neutral. Report only what was said; do not assess truth yourself. You may give a person the role or title you know them by, even if it may be out of date, but never make one up when you don't actually know it. People's NAMES, however, come only from the input: use them as they appear there, and never add a person who isn't in it or put a different person in their place — the same goes for which country someone represents. Return only the summary text.`;
 }
 
 function distillPrompt() {

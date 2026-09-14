@@ -1213,8 +1213,11 @@ function renameSpeakerInCards(oldName, newName) {
 // multi-line selection. Strip it all down to plain running text.
 function cleanTranscriptSelection(text) {
   return text
+    // Drop "↳ translation" lines whole, not just their marker. The fragment becomes a
+    // key point's verbatim QUOTE, and a translation is derived text — often an AI's: a ⭐
+    // over a French passage once quoted the AI's Spanish between the real sentences.
+    .replace(/(^|\n)[ \t]*↳[^\n]*/g, '$1')
     .replace(/\[\d{2}:\d{2}:\d{2}\]/g, ' ')
-    .replace(/(^|\n)\s*↳\s*/g, '$1')
     .replace(/\s+/g, ' ')
     .trim();
 }
