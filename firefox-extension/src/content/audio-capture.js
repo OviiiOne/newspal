@@ -14,6 +14,7 @@ let socket = null;
 let captureActive = false;
 let pendingStart = false; // start in progress (may be waiting for the page's player)
 let usedPageMediaCapture = false; // capturing the page's own <video>/<audio> (vs a device)
+let capturedMediaEl = null; // that element — the silence watchdog checks it is really playing
 let utteranceBuffer = '';
 let gladiaKey = '';
 let gladiaProxyUrl = ''; // set when Gladia should be started via the proxy (key server-side)
@@ -57,7 +58,8 @@ function getPageMediaStream(strict = false) {
   if (!capture) return null;
   try {
     const stream = capture.call(el);
-    return (stream && stream.getAudioTracks().length) ? stream : null;
+    if (stream && stream.getAudioTracks().length) { capturedMediaEl = el; return stream; }
+    return null;
   } catch (err) {
     console.warn('[audio-capture] captureStream failed:', err);
     return null;
@@ -415,6 +417,36 @@ let gladiaWatchdog = null;
 let lastChunkSentAt = 0;
 let SILENT_CHUNK = null; // 100ms of silence, precomputed
 
+// ── Silence watchdog ─────────────────────────────────────────────────────────
+// A capture can connect to Gladia and still carry nothing: Firefox hands Web Audio pure
+// silence for a video served from another origin (it only logs a console warning — no
+// exception reaches us), and an AudioContext that never starts sends nothing either. The
+// keepalive then keeps the session looking healthy, so nothing is ever transcribed and
+// nothing says why. Real audio, even a quiet room, is never EXACTLY zero; a blocked
+// stream is. So warn when only zeros arrive while the video is audibly playing.
+// It only warns: press conferences open with silent waits, and cutting the session
+// there would lose it.
+const SILENCE_WARN_MS = 8000;
+let lastSoundAt = 0;
+let silenceWarned = false;
+let gladiaSilenceCheck = null;
+
+function bufferHasSound(samples) {
+  for (let i = 0; i < samples.length; i++) if (samples[i] !== 0) return true;
+  return false;
+}
+
+// A paused, ended, muted or zero-volume player is silent on purpose.
+function isAudiblyPlaying(el) {
+  return !!el && !el.paused && !el.ended && !el.muted && el.volume > 0 && el.readyState >= 3;
+}
+
+// 'reset' (not audibly playing: that time doesn't count) | 'wait' | 'warn'.
+function silenceVerdict(now, lastSound, el) {
+  if (!isAudiblyPlaying(el)) return 'reset';
+  return (now - lastSound >= SILENCE_WARN_MS) ? 'warn' : 'wait';
+}
+
 function silentChunkBase64() {
   if (!SILENT_CHUNK) SILENT_CHUNK = arrayBufferToBase64(new Int16Array(WHISPER_SAMPLE_RATE / 10).buffer);
   return SILENT_CHUNK;
@@ -423,6 +455,7 @@ function silentChunkBase64() {
 function stopGladiaPipeline() {
   if (gladiaKeepalive) { clearInterval(gladiaKeepalive); gladiaKeepalive = null; }
   if (gladiaWatchdog) { clearInterval(gladiaWatchdog); gladiaWatchdog = null; }
+  if (gladiaSilenceCheck) { clearInterval(gladiaSilenceCheck); gladiaSilenceCheck = null; }
   if (gladiaProcessor) { try { gladiaProcessor.disconnect(); } catch {} gladiaProcessor = null; }
   if (gladiaSource) { try { gladiaSource.disconnect(); } catch {} gladiaSource = null; }
   if (audioContext) { audioContext.close().catch(() => {}); audioContext = null; }
@@ -440,6 +473,7 @@ function startGladiaPipeline() {
     if (socket?.readyState !== WebSocket.OPEN) return;
 
     const float32 = e.inputBuffer.getChannelData(0);
+    if (bufferHasSound(float32)) { lastSoundAt = Date.now(); silenceWarned = false; }
     const int16 = new Int16Array(float32.length);
     for (let i = 0; i < float32.length; i++) {
       int16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32768));
@@ -482,6 +516,28 @@ function startGladiaPipeline() {
     startGladiaPipeline();
     browser.runtime.sendMessage({ type: 'PIPELINE_INFO', message: t('ac_recaptured') });
   }, 4000);
+
+  // Silence watchdog (see bufferHasSound). Page capture only: a quiet input device is
+  // legitimate, and there is no player to ask whether it is playing.
+  lastSoundAt = Date.now();
+  silenceWarned = false;
+  gladiaSilenceCheck = setInterval(() => {
+    if (!captureActive || transcriptionMode !== 'gladia' || silenceWarned) return;
+    if (!usedPageMediaCapture) return;
+    const verdict = silenceVerdict(Date.now(), lastSoundAt, capturedMediaEl);
+    if (verdict === 'reset') { lastSoundAt = Date.now(); return; }
+    if (verdict !== 'warn') return;
+    silenceWarned = true;
+    const contextState = audioContext ? audioContext.state : 'none';
+    console.warn('[audio-capture] only silence for', SILENCE_WARN_MS, 'ms while the video plays; AudioContext:', contextState);
+    browser.runtime.sendMessage({
+      type: 'CAPTURE_SILENT',
+      message: fmt(t('ac_no_sound'), { s: SILENCE_WARN_MS / 1000 }),
+      // Evidence for the export: a context that never started is a different fault from a
+      // blocked cross-origin stream (which runs, but only yields zeros).
+      contextState,
+    });
+  }, 2000);
 }
 
 function arrayBufferToBase64(buffer) {
@@ -774,6 +830,7 @@ function stopAudioCapture() {
     mediaStream.getTracks().forEach(t => t.stop());
     mediaStream = null;
   }
+  capturedMediaEl = null;
 
   if (audioContext) {
     audioContext.close().catch(() => {});

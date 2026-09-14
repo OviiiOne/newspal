@@ -1116,6 +1116,11 @@ browser.runtime.onMessage.addListener((msg, sender) => {
       if (activeTabId) sendToTab(activeTabId, { type: 'PIPELINE_INFO', message: msg.message });
       return Promise.resolve();
 
+    // The capturing frame (possibly an iframe) hears only silence — relay to the panel.
+    case 'CAPTURE_SILENT':
+      if (activeTabId) sendToTab(activeTabId, { type: 'CAPTURE_SILENT', message: msg.message, contextState: msg.contextState });
+      return Promise.resolve();
+
     // How the page ended up capturing audio ('page' | 'device'). Kept here because the
     // background outlives the reload: on resume the content script needs to know whether
     // to wait for the player or go straight back to the audio device.

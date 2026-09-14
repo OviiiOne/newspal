@@ -1492,6 +1492,19 @@ browser.runtime.onMessage.addListener((msg) => {
       break;
     }
 
+    case 'CAPTURE_SILENT': {
+      // Connected, but no sound reaches the extension. Red toast + dot, and a marker in the
+      // feed/export; the AudioContext state is kept when abnormal, as evidence of which
+      // fault it was (never started vs a blocked stream that runs silent).
+      showError(msg.message || t('ov_no_sound_marker'));
+      setDotState('error');
+      const state = msg.contextState && msg.contextState !== 'running' ? ' [' + msg.contextState + ']' : '';
+      const marker = t('ov_no_sound_marker') + state;
+      addModelMarker(marker);
+      if (typeof logModelChange === 'function') logModelChange(lastTranscriptTimestamp || getClockTimecode(), marker);
+      break;
+    }
+
     case 'NEW_KEYPOINTS':
       if (msg.results) {
         for (const kp of msg.results) addKeyPoint(kp);
