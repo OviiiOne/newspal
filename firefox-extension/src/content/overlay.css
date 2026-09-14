@@ -334,6 +334,31 @@
   line-height: 1.4;
 }
 
+/* Translation made by the AI fallback: it can rewrite content, so it must not look like
+   Google's. Violet matches the "model active" markers — the colour already meaning AI. */
+.rtfc-tr.rtfc-tr-ai {
+  color: #d8b4fe;
+}
+
+.rtfc-ai-badge {
+  display: inline-block;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 1px 2px;
+  margin-right: 4px;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  vertical-align: 1px;
+  user-select: none;
+  cursor: help;
+}
+
+/* The label is generated, so it never ends up in a selection or a copy. */
+.rtfc-ai-badge::before {
+  content: attr(data-label);
+}
+
 .rtfc-tr-speaker {
   font-size: 10px;
   font-weight: 700;

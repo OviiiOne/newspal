@@ -186,13 +186,24 @@ Return ONLY a JSON object of the form {"points": [ ... ]} (no markdown, no text 
 If nothing is noteworthy, return {"points": []}.`;
 }
 
-function translatePrompt() {
+// What a translation must carry over untouched. A small model "localises" otherwise: it
+// swapped a politician's name for another, and turned "en français" into "in Spanish".
+const TRANSLATE_KEEP = 'Keep every name, number, title, language, country and place exactly as the text says — translate the words, never replace one of these with a different one.';
+
+function translatePrompt(sourceCode) {
   const L = promptLang();
+  // Source known (Gladia tags each utterance): name it, and drop the passthrough clause.
+  // "If it is already in Spanish or English, return it as-is" is what made a small model
+  // echo French and Finnish lines untouched, and once translate French into English.
+  if (sourceCode) {
+    const src = languageDisplayName(sourceCode, 'en');
+    return `Translate the user's ${src} text into ${L.name}. Output ONLY the ${L.name} translation — no quotes, no notes, no explanation. ${TRANSLATE_KEEP}`;
+  }
   const passthrough = [...new Set([L.name, ...UNDERSTOOD_LANGS.map(langName).filter(Boolean)])];
   const passList = passthrough.length > 1
     ? passthrough.slice(0, -1).join(', ') + ' or ' + passthrough[passthrough.length - 1]
     : passthrough[0];
-  return `Translate the user's text into ${L.name}. If the text is already in ${passList}, return it EXACTLY as-is, unchanged. Output ONLY the resulting text — no quotes, no notes, no explanation.`;
+  return `Translate the user's text into ${L.name}. If the text is already in ${passList}, return it EXACTLY as-is, unchanged. Output ONLY the resulting text — no quotes, no notes, no explanation. ${TRANSLATE_KEEP}`;
 }
 
 function verifyPrompt() {
@@ -979,11 +990,21 @@ function sendToTab(tabId, msg) {
 
 // ── Translation ────────────────────────────────────────────────────────────────
 
-// Languages the user marked as understood are left untranslated. Any other selected
-// language — or 'auto' — gets translated to the UI language (the prompt passes the
-// understood languages through unchanged, so 'auto' stays correct without detection).
-function needsTranslation() {
-  return !UNDERSTOOD_LANGS.includes(SOURCE_LANGUAGE);
+// "en-US" → "en", so detected tags compare against the plain codes the user picked.
+function baseLang(code) {
+  return String(code || '').toLowerCase().split(/[-_]/)[0];
+}
+
+// Languages the user marked as understood are left untranslated. The decision uses the
+// language Gladia detected for THIS utterance whenever it has one, and only falls back
+// to the session setting (often 'auto') without it. It used to rely on the session
+// setting alone, which in 'auto' sent every line to the translator and left the call to
+// Google's detection — or, when Google failed, to an LLM that ignored the passthrough
+// instruction and translated or even rewrote English lines (it swapped a politician's
+// name for a different one, and the summary then repeated it).
+function needsTranslation(detectedLanguage) {
+  const lang = baseLang(detectedLanguage) || SOURCE_LANGUAGE;
+  return !UNDERSTOOD_LANGS.includes(lang);
 }
 
 // Unofficial Google Translate endpoint (no key, no billing). Auto-detects the source
@@ -992,38 +1013,127 @@ function needsTranslation() {
 // sometimes left fragments half-translated. Being unofficial it can rate-limit/block,
 // so translateToUiLanguage falls back to Groq when it fails. Returns the translation
 // plus the language Google detected (used to honour "languages I understand").
+// Failures carry a `kind` so the user can be told WHY Google stopped answering instead of
+// trusting a later test that happened to work: 'network' (no connection), 'http' (with
+// `status`, 429 = rate limit), 'blocked' (a 200 whose body isn't JSON — Google's "unusual
+// traffic" page), 'shape' (JSON we don't recognise).
+function googleError(kind, message, extra) {
+  return Object.assign(new Error(message), { kind }, extra || {});
+}
+
 async function translateWithGoogle(text, targetCode) {
   const url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl='
     + encodeURIComponent(targetCode) + '&dt=t&q=' + encodeURIComponent(text);
-  const res = await fetch(url);
-  if (!res.ok) throw new Error('google translate http ' + res.status);
-  const data = await res.json();
+  let res;
+  // No cookies or referrer: the endpoint doesn't need them, and they would tie this
+  // traffic to the user's Google identity. This does NOT avoid its HTTP 429s — tested: a
+  // live foreign-language session still got 429 without cookies, while single requests
+  // (curl, address bar, the extension itself) answered 200. The throttle is undocumented.
+  try { res = await fetch(url, { credentials: 'omit', referrerPolicy: 'no-referrer', cache: 'no-store' }); }
+  catch (err) { throw googleError('network', 'google translate network: ' + err.message); }
+  if (!res.ok) throw googleError('http', 'google translate http ' + res.status, { status: res.status });
+  const body = await res.text();
+  let data;
+  try { data = JSON.parse(body); }
+  catch { throw googleError('blocked', 'google translate non-JSON: ' + body.slice(0, 60).replace(/\s+/g, ' ')); }
   // Shape: [ [ [translatedChunk, originalChunk, ...], ... ], null, "<detectedLang>", ... ]
-  if (!Array.isArray(data) || !Array.isArray(data[0])) throw new Error('google translate shape');
+  if (!Array.isArray(data) || !Array.isArray(data[0])) throw googleError('shape', 'google translate shape');
   const translated = data[0].map(seg => (Array.isArray(seg) && seg[0]) ? seg[0] : '').join('').trim();
   const detected = typeof data[2] === 'string' ? data[2] : '';
   return { translated, detected };
 }
 
-async function translateToUiLanguage(text) {
-  if (!text || !text.trim()) return '';
+// Waits before each Google attempt. The unofficial endpoint throttles in bursts, and a
+// quick double retry lost about a third of the lines in a real session. Translation
+// arrives after its line is already on screen, so spacing attempts out costs nothing.
+const GOOGLE_TRANSLATE_DELAYS = [0, 600, 1500, 3000];
+
+// Circuit breaker. When the endpoint is throttling, retrying every line four times only
+// quadruples the traffic that caused the throttle (a Finnish session lost Google on 100%
+// of its lines). After a few lines fail completely, stop asking for a while and let the
+// AI carry the translations; then probe Google again.
+const GOOGLE_FAILED_LINES_BEFORE_PAUSE = 3;
+const GOOGLE_PAUSE_MS = 90 * 1000;
+let googleFailedLines = 0;
+let googlePausedUntil = 0;
+let googleWasPaused = false; // so its recovery can be announced once
+
+// The reason, in the user's words, for the marker the panel shows and the export keeps.
+function googleFailureReason(err) {
+  switch (err && err.kind) {
+    case 'network': return t('bg_gt_network');
+    case 'http': return err.status === 429 ? t('bg_gt_ratelimit') : fmt(t('bg_gt_http'), { status: err.status });
+    case 'blocked': return t('bg_gt_blocked');
+    case 'shape': return t('bg_gt_shape');
+    default: return (err && err.message) || '?';
+  }
+}
+
+// A marker in the live transcript + a toast, logged into the export with its time.
+function notifyTranslator(label) {
+  if (activeTabId) sendToTab(activeTabId, { type: 'TRANSLATOR_STATUS', label });
+}
+
+// Translates one transcript line and reports each version through `report(text, source)`
+// (source 'google' | 'ai'; an empty text means "show no translation").
+//
+// Google is the translator of record: it doesn't paraphrase or "correct" what was said.
+// The moment its FIRST attempt fails, the AI is asked in parallel so the reader isn't left
+// waiting, and its version is shown provisionally — badged, because an LLM can rewrite
+// content. Google keeps retrying meanwhile, and if it gets through it REPLACES the AI
+// version. A late AI answer never overwrites Google's. When Google succeeds on its first
+// try, the AI is never called — so no request quota is spent on lines that didn't need it.
+async function translateLine(text, report, sourceCode) {
+  if (!text || !text.trim()) return;
   const target = getUiLang();
-  // 1) Google first, retried once (covers transient network / rate blips).
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const source = baseLang(sourceCode);
+  let settled = false;   // Google has the final word
+  let aiRequested = false;
+  let lastError = null;
+
+  const askAi = () => {
+    if (aiRequested) return;
+    aiRequested = true;
+    callClaude(text, translatePrompt(source), false, 768, false, true)
+      .then(r => {
+        const out = (r.text || '').trim();
+        if (out && !settled) report(out, 'ai');
+      })
+      .catch(() => {});
+  };
+
+  // Google is resting after a run of failures: go straight to the AI.
+  if (Date.now() < googlePausedUntil) { askAi(); return; }
+
+  for (const delay of GOOGLE_TRANSLATE_DELAYS) {
+    if (delay) await new Promise(r => setTimeout(r, delay));
     try {
       const { translated, detected } = await translateWithGoogle(text, target);
-      // Honour "languages I understand": if Google detects the source as one of them,
-      // leave it untranslated (mirrors the Groq prompt's passthrough, needed in 'auto').
-      if (detected && UNDERSTOOD_LANGS.includes(detected)) return '';
-      if (translated) return translated;
-    } catch { /* fall through to the retry, then to Groq */ }
+      settled = true;
+      googleFailedLines = 0;
+      if (googleWasPaused) { googleWasPaused = false; notifyTranslator(t('bg_gt_recovered')); }
+      // Honour "languages I understand" when there was no per-utterance language to go
+      // by — and take back a provisional AI version if one was already shown.
+      if (detected && UNDERSTOOD_LANGS.includes(baseLang(detected))) {
+        if (aiRequested) report('', 'google');
+        return;
+      }
+      if (translated) { report(translated, 'google'); return; }
+      settled = false;
+      lastError = googleError('shape', 'google translate empty translation');
+    } catch (err) {
+      lastError = err;
+    }
+    askAi();
+    if (Date.now() < googlePausedUntil) return; // another line tripped the breaker meanwhile
   }
-  // 2) Fallback: the free Groq model (silent — it's frequent and best-effort).
-  try {
-    const out = (await callClaude(text, translatePrompt(), false, 768, false, true)).text;
-    return (out || '').trim();
-  } catch {
-    return '';
+  console.warn(`[translate] Google failed ${GOOGLE_TRANSLATE_DELAYS.length}×: ${lastError && lastError.message} — the AI version stays`);
+  if (++googleFailedLines >= GOOGLE_FAILED_LINES_BEFORE_PAUSE) {
+    googleFailedLines = 0;
+    googlePausedUntil = Date.now() + GOOGLE_PAUSE_MS;
+    googleWasPaused = true;
+    console.warn(`[translate] pausing Google for ${GOOGLE_PAUSE_MS / 1000}s after repeated failures`);
+    notifyTranslator(fmt(t('bg_gt_paused'), { reason: googleFailureReason(lastError) }));
   }
 }
 
@@ -1035,28 +1145,42 @@ function getClockTimecode() {
   return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
 }
 
-async function relayTranscript(msg, timecode) {
+// Identifies a final transcript line so its translation can find it later. Time-based,
+// so ids never collide with lines restored from a backup after a browser restart.
+let transcriptLineSeq = 0;
+
+function relayTranscript(msg, timecode) {
   if (!activeTabId) return;
   timecode = msg.isFinal ? (timecode || getClockTimecode()) : '';
-  let translation = '';
-  if (msg.isFinal && needsTranslation()) {
-    translation = await translateToUiLanguage(msg.text);
-  }
   // Resolve a speaker label for the transcript (Gladia diarization). The overlay
   // shows it at the start and whenever the speaker changes.
   let speaker = null;
   if (msg.isFinal && msg.speaker !== null && msg.speaker !== undefined) {
     speaker = speakerIdToName[msg.speaker] || ('Orador ' + (Number(msg.speaker) + 1));
   }
-  sendToTab(activeTabId, {
+  const lineId = msg.isFinal ? 'tl-' + Date.now().toString(36) + '-' + (++transcriptLineSeq) : null;
+
+  // The line goes out at once; its translation follows as a separate message. Waiting
+  // for the translation first delayed every line by the translator's retries and could
+  // deliver a later line before an earlier one.
+  const tabId = activeTabId;
+  sendToTab(tabId, {
     type: 'TRANSCRIPT_RESULT',
     text: msg.text,
     isFinal: msg.isFinal,
     interim: msg.interim,
     timecode,
-    translation,
+    translation: '',
     speaker,
+    lineId,
   });
+
+  if (!msg.isFinal || !needsTranslation(msg.language)) return;
+  translateLine(msg.text, (text, source) => {
+    // The session may have ended, or moved to another tab, while we were translating.
+    if (activeTabId !== tabId) return;
+    sendToTab(tabId, { type: 'TRANSCRIPT_TRANSLATION', lineId, translation: text, source });
+  }, msg.language);
 }
 
 // ── Messages ──────────────────────────────────────────────────────────────────

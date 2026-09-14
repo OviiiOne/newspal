@@ -373,6 +373,9 @@ async function connectGladia() {
             isFinal,
             interim: !isFinal,
             speaker,
+            // Gladia detects the language of every utterance (BCP-47, e.g. "en"). It is
+            // what decides whether a line needs translating — see needsTranslation().
+            language: msg.data?.utterance?.language || null,
           });
         }
       } catch (err) {

@@ -517,7 +517,46 @@ function getClockTimecode() {
 
 let lastTranscriptSpeaker = null;
 
-function addTranscriptLine(timecode, text, translation, speaker) {
+// The "↳ translation" sub-line. An AI translation gets its own colour and a small badge,
+// because unlike Google it can rewrite what was said (it once swapped a name). The badge
+// label lives in a pseudo-element via data-label, so it is never part of a text selection
+// and can't leak into a ⭐ fragment or a copy-paste.
+// A later call replaces the sub-line: Google's version supersedes a provisional AI one,
+// and an empty translation removes it (a provisional version taken back).
+function setLineTranslation(line, text, translation, source) {
+  let tr = line.querySelector('.rtfc-tr');
+  if (!translation || !translation.trim() || translation.trim() === text.trim()) {
+    if (tr) tr.remove();
+    return;
+  }
+  if (!tr) {
+    tr = document.createElement('div');
+    line.appendChild(tr);
+  }
+  tr.className = 'rtfc-tr' + (source === 'ai' ? ' rtfc-tr-ai' : '');
+  tr.textContent = '↳ ';
+  if (source === 'ai') {
+    const badge = document.createElement('span');
+    badge.className = 'rtfc-ai-badge';
+    badge.dataset.label = t('ov_ai_badge');
+    badge.title = t('ov_ai_badge_title');
+    tr.appendChild(badge);
+  }
+  tr.appendChild(document.createTextNode(translation));
+}
+
+// A translation arriving after its line is already on screen.
+function applyLateTranslation(lineId, translation, source) {
+  if (!transcriptFeedEl || !lineId) return;
+  const line = transcriptFeedEl.querySelector('.rtfc-transcript-line[data-line-id="' + CSS.escape(lineId) + '"]');
+  if (!line) return; // the line was cleared, or restored without an id
+  // Same courtesy as new lines: only keep following the feed if the user already was.
+  const atBottom = transcriptFeedEl.scrollHeight - transcriptFeedEl.scrollTop - transcriptFeedEl.clientHeight < 28;
+  setLineTranslation(line, line.dataset.text || '', translation, source);
+  if (atBottom) transcriptFeedEl.scrollTop = transcriptFeedEl.scrollHeight;
+}
+
+function addTranscriptLine(timecode, text, translation, speaker, lineId, translationSource) {
   if (!transcriptFeedEl) return;
   // Only auto-scroll to the newest line if the user is already at the bottom AND
   // isn't selecting text here. Otherwise leave the view where it is, so they can
@@ -539,17 +578,14 @@ function addTranscriptLine(timecode, text, translation, speaker) {
   }
   const line = document.createElement('div');
   line.className = 'rtfc-transcript-line';
+  if (lineId) line.dataset.lineId = lineId;
+  line.dataset.text = text;
   const tc = document.createElement('span');
   tc.className = 'rtfc-tc';
   tc.textContent = '[' + timecode + ']';
   line.appendChild(tc);
   line.appendChild(document.createTextNode(' ' + text));
-  if (translation && translation.trim() && translation.trim() !== text.trim()) {
-    const tr = document.createElement('div');
-    tr.className = 'rtfc-tr';
-    tr.textContent = '↳ ' + translation;
-    line.appendChild(tr);
-  }
+  setLineTranslation(line, text, translation, translationSource);
   transcriptFeedEl.appendChild(line);
   if (shouldStick) transcriptFeedEl.scrollTop = transcriptFeedEl.scrollHeight;
 }
@@ -1023,7 +1059,7 @@ function renderRestoredSession(data) {
 
   (data.transcript || []).forEach(entry => {
     if (entry.modelChange) { addModelMarker(entry.modelChange); return; }
-    addTranscriptLine(entry.timecode, entry.text, entry.translation, entry.speaker);
+    addTranscriptLine(entry.timecode, entry.text, entry.translation, entry.speaker, entry.lineId, entry.translationSource);
     if (entry.timecode) lastTranscriptTimestamp = entry.timecode;
     sentenceTimestamps.push({ text: entry.text, timestamp: entry.timecode || '' });
   });
@@ -1460,13 +1496,20 @@ browser.runtime.onMessage.addListener((msg) => {
         // strip [Speaker N] prefix before displaying
         const displayText = msg.text.replace(/^\[.*?\]\s*/, '');
         const translation = msg.translation || '';
-        addTranscriptLine(ts, displayText, translation, msg.speaker || null);
-        if (typeof logTranscript === 'function') logTranscript(ts, displayText, translation, msg.speaker || null);
+        addTranscriptLine(ts, displayText, translation, msg.speaker || null, msg.lineId || null);
+        if (typeof logTranscript === 'function') logTranscript(ts, displayText, translation, msg.speaker || null, msg.lineId || null);
         // track which speaker is active from label
         const labelMatch = msg.text.match(/^\[(.+?)\]/);
         if (labelMatch && speakers.includes(labelMatch[1])) {
           lastActiveSpeaker = labelMatch[1];
         }
+      }
+      break;
+
+    case 'TRANSCRIPT_TRANSLATION':
+      applyLateTranslation(msg.lineId, msg.translation || '', msg.source || 'google');
+      if (typeof updateTranscriptTranslation === 'function') {
+        updateTranscriptTranslation(msg.lineId, msg.translation || '', msg.source || 'google');
       }
       break;
 
@@ -1505,6 +1548,18 @@ browser.runtime.onMessage.addListener((msg) => {
       const marker = t('ov_no_sound_marker') + state;
       addModelMarker(marker);
       if (typeof logModelChange === 'function') logModelChange(lastTranscriptTimestamp || getClockTimecode(), marker);
+      break;
+    }
+
+    case 'TRANSLATOR_STATUS': {
+      // Google Translate stopped (with the reason) or came back. Same treatment as a model
+      // change: a toast now, a marker in the feed, and a timed line in the export — so a
+      // failure is evidence on record, not something guessed at afterwards.
+      const label = msg.label || '';
+      if (!label) break;
+      showError(label, 'info');
+      addModelMarker(label);
+      if (typeof logModelChange === 'function') logModelChange(lastTranscriptTimestamp || getClockTimecode(), label);
       break;
     }
 

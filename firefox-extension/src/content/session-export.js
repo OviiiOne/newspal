@@ -79,8 +79,24 @@ function logVerdict(result) {
 }
 
 // Full session transcript, each line tagged with its clock timecode HH:MM:SS:FF.
-function logTranscript(timecode, text, translation, speaker) {
-  transcriptLog.push({ timecode, text, translation: translation || '', speaker: speaker || null });
+// `lineId` lets a translation that arrives later attach itself to its line.
+function logTranscript(timecode, text, translation, speaker, lineId) {
+  transcriptLog.push({
+    timecode, text, translation: translation || '', speaker: speaker || null,
+    lineId: lineId || null, translationSource: '',
+  });
+  persistSession();
+}
+
+// A line's translation arrived after the line was logged, or was replaced (Google's
+// version supersedes a provisional AI one) or taken back (empty). `source` is 'google' or
+// 'ai'; the export marks AI translations, which can rewrite what was said.
+function updateTranscriptTranslation(lineId, translation, source) {
+  if (!lineId) return;
+  const entry = transcriptLog.find(x => x.lineId === lineId);
+  if (!entry) return;
+  entry.translation = translation || '';
+  entry.translationSource = translation ? (source || 'google') : '';
   persistSession();
 }
 
@@ -312,6 +328,9 @@ function exportPDF() {
     : '';
 
   let trLastSpk = null;
+  // Resolved out here: the map below names its item `t`, which shadows the i18n t().
+  const aiBadgeHTML = '<span class="ai-badge" title="' + escapeHtml(t('ov_ai_badge_title')) + '">' +
+    escapeHtml(t('ov_ai_badge')) + '</span>';
   const transcriptHTML = transcriptLog.length
     ? '<div class="claims-title">' + escapeHtml(t('ex_transcript')) + ' (' + transcriptLog.filter(x => !x.modelChange).length + ')</div>' +
       '<div class="transcript">' +
@@ -326,8 +345,10 @@ function exportPDF() {
             trLastSpk = t.speaker;
             spkHTML = '<div class="transcript-speaker" style="color:' + speakerColor(t.speaker) + '">' + escapeHtml(t.speaker) + '</div>';
           }
+          const isAi = t.translationSource === 'ai';
           const tr = (t.translation && t.translation.trim() && t.translation.trim() !== (t.text || '').trim())
-            ? '<div class="transcript-tr">↳ ' + escapeHtml(t.translation) + '</div>'
+            ? '<div class="transcript-tr' + (isAi ? ' transcript-tr-ai' : '') + '">↳ ' +
+              (isAi ? aiBadgeHTML : '') + escapeHtml(t.translation) + '</div>'
             : '';
           return spkHTML + '<div class="transcript-line">' +
             '<span class="transcript-tc">[' + escapeHtml(t.timecode) + ']</span> ' +
@@ -389,6 +410,8 @@ function exportPDF() {
     '.transcript-line { font-size: 12px; color: #333; line-height: 1.6; margin-bottom: 2px; }' +
     '.transcript-tc { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; font-weight: 600; color: #b45309; }' +
     '.transcript-tr { margin-left: 16px; color: #1d4ed8; font-size: 12px; line-height: 1.5; }' +
+    '.transcript-tr-ai { color: #7c3aed; }' +
+    '.ai-badge { display: inline-block; font-size: 8px; font-weight: 700; line-height: 1; padding: 1px 2px; margin-right: 4px; border: 1px solid currentColor; border-radius: 2px; vertical-align: 1px; }' +
     '.transcript-speaker { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; margin: 8px 0 2px; }' +
     '.transcript-model { font-size: 10px; font-weight: 700; color: #7c3aed; text-align: center; margin: 8px 0; letter-spacing: 0.03em; }' +
     '@media print { body { padding: 20px; } .claim-card { page-break-inside: avoid; } }' +
