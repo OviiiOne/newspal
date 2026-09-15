@@ -873,8 +873,10 @@ function buildKeyPointCard(kp) {
     ? '<p class="rtfc-kp-quote">“' + escapeHtml(kp.quote) + '”</p>'
     : '';
 
+  // The exact model is on hover: the card has no room, but it answers "which Mistral?".
   const modelTag = kp.model
-    ? '<span class="rtfc-kp-model">' + escapeHtml(t('ov_via') + ' ' + ((typeof providerLabel === 'function') ? providerLabel(kp.model) : kp.model)) + '</span>'
+    ? '<span class="rtfc-kp-model"' + (kp.modelId ? ' title="' + escapeHtml(kp.modelId) + '"' : '') + '>' +
+      escapeHtml(t('ov_via') + ' ' + ((typeof providerLabel === 'function') ? providerLabel(kp.model) : kp.model)) + '</span>'
     : '';
 
   card.innerHTML = [
@@ -1101,7 +1103,7 @@ function renderRestoredSession(data) {
     }
   });
 
-  if (data.summary) renderSummary(data.summary);
+  if (data.summary) renderSummary(data.summary, '', '');
 }
 
 function applyKeyPointVerdict(id, result) {
@@ -1163,7 +1165,7 @@ function generateSummary() {
   browser.runtime.sendMessage({ type: 'SUMMARIZE', input });
 }
 
-function renderSummary(text) {
+function renderSummary(text, provider, modelId) {
   if (!summaryEl) return;
   summaryEl.style.display = '';
   const title = '<div class="rtfc-summary-title">' + escapeHtml(t('ov_summary_title')) + '</div>';
@@ -1176,7 +1178,7 @@ function renderSummary(text) {
   body.className = 'rtfc-summary-body';
   body.textContent = text;
   summaryEl.appendChild(body);
-  if (typeof setSummary === 'function') setSummary(text);
+  if (typeof setSummary === 'function') setSummary(text, provider, modelId);
 }
 
 // Participants bar: shows current participants and lets the user add more live
@@ -1588,7 +1590,7 @@ browser.runtime.onMessage.addListener((msg) => {
       break;
 
     case 'SUMMARY_RESULT':
-      renderSummary(msg.text || '');
+      renderSummary(msg.text || '', msg.provider || '', msg.modelId || '');
       // The user asked to close WITH a summary: it's in the log now, so export and go.
       if (closeAfterSummary) finishCloseWithSummary();
       break;

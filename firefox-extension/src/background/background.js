@@ -360,7 +360,13 @@ function noteChainFailure() {
 function parseLLMResponse(data) {
   const raw = data?.content?.[0]?.text?.trim() || '';
   const text = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
-  return { text, sources: Array.isArray(data?.sources) ? data.sources : [] };
+  // The proxy reports which model of the provider actually answered. "vía Mistral" alone
+  // hid whether a call went to mistral-large or fell through to a smaller model.
+  return {
+    text,
+    sources: Array.isArray(data?.sources) ? data.sources : [],
+    model: typeof data?.model === 'string' ? data.model : '',
+  };
 }
 
 async function callClaude(userMessage, systemPrompt, grounded = false, maxTokens = 768, json = false, silent = false) {
@@ -446,6 +452,7 @@ async function callClaude(userMessage, systemPrompt, grounded = false, maxTokens
       }
       setActiveProvider(provider);
       noteChainSuccess();
+      console.log(`[claude] ${provider} answered with model ${parsed.model || '?'}`);
       return parsed;
     } catch (err) {
       failures.push({ provider, err: err.message });
@@ -872,11 +879,12 @@ async function extractKeyPoints(contextText, title, lexicalSummary, lexicalSnaps
       feedbackCtx += `\n\nThe user marked these as important — prioritise anything similar:\n- ${POS_EXAMPLES.slice(-15).join('\n- ')}`;
     }
 
-    const raw = (await callClaude(
+    const answer = await callClaude(
       `${titleContext}Transcript: "${contextText}"${alreadyNoted}${feedbackCtx}`,
       keypointsPrompt(),
       false, 2048, true, true
-    )).text;
+    );
+    const raw = answer.text;
     const obj = parseObject(raw);
     const results = (obj && Array.isArray(obj.points)) ? obj.points : parseArray(raw);
     // Hard cap: keep at most the single most newsworthy point per excerpt, even if
@@ -898,6 +906,7 @@ async function extractKeyPoints(contextText, title, lexicalSummary, lexicalSnaps
             || (r.speaker && !String(r.speaker).match(/^Speaker\s*\d+$/i) ? r.speaker : null),
           dominantSpeakerId,
           model: activeProvider,
+          modelId: answer.model,
           timecode: findQuoteTimecode(r.quote || r.point, windowSentences),
         })),
       });
@@ -921,14 +930,14 @@ async function addManualKeyPoint(text, speaker, context, timecode) {
     const contextBlock = (context && context.trim())
       ? `Preceding transcript (CONTEXT ONLY — do NOT summarize this; use it to tell who is speaking and what the fragment refers to):\n"${context.trim()}"\n\n`
       : '';
-    const raw = (await callClaude(
+    const answer = await callClaude(
       `${titleContext}${contextBlock}Fragment to turn into a key point: "${text}"`,
       manualKeypointPrompt(), false, 512, true
-    )).text;
-    const kp = parseObject(raw);
+    );
+    const kp = parseObject(answer.text);
     const result = (kp && kp.point)
-      ? { point: kp.point, category: (kp.category || catOther).toUpperCase(), quote: kp.quote || text, speaker: spk || kp.speaker || null, dominantSpeakerId: null, model: activeProvider, timecode: tc }
-      : { point: text, category: catOther, quote: text, speaker: spk, dominantSpeakerId: null, model: activeProvider, timecode: tc };
+      ? { point: kp.point, category: (kp.category || catOther).toUpperCase(), quote: kp.quote || text, speaker: spk || kp.speaker || null, dominantSpeakerId: null, model: activeProvider, modelId: answer.model, timecode: tc }
+      : { point: text, category: catOther, quote: text, speaker: spk, dominantSpeakerId: null, model: activeProvider, modelId: answer.model, timecode: tc };
     if (activeTabId) sendToTab(activeTabId, { type: 'NEW_KEYPOINTS', results: [result] });
   } catch (err) {
     console.error('[manual-keypoint] error:', err);
@@ -975,8 +984,12 @@ async function verifyKeyPoint(id, claim, quote) {
 
 async function summarizeSession(input) {
   try {
-    const { text } = await callClaude(input, summaryPrompt(), false, 2048);
-    if (activeTabId) sendToTab(activeTabId, { type: 'SUMMARY_RESULT', text: text || '' });
+    const { text, model } = await callClaude(input, summaryPrompt(), false, 2048);
+    if (activeTabId) {
+      sendToTab(activeTabId, {
+        type: 'SUMMARY_RESULT', text: stripMarkdown(text), provider: activeProvider, modelId: model,
+      });
+    }
   } catch (err) {
     console.error('[summary] error:', err);
     if (activeTabId) sendToTab(activeTabId, { type: 'SUMMARY_RESULT', text: '' });

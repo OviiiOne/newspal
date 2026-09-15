@@ -8,6 +8,7 @@ const sessionLog = [];
 const transcriptLog = [];
 const keyPointsLog = [];
 let sessionSummary = '';
+let sessionSummaryModel = ''; // "Mistral · mistral-large-2512" — who wrote the summary
 let sessionStartTime = null;
 
 // ── Surviving a page reload ───────────────────────────────────────────────────
@@ -34,6 +35,7 @@ function persistSession() {
         transcriptLog,
         keyPointsLog,
         summary: sessionSummary,
+        summaryModel: sessionSummaryModel,
       },
     }).catch(() => {});
   }, 1500);
@@ -51,6 +53,7 @@ async function restoreSession(id) {
   sessionId = id;
   sessionStartTime = stored.startTime || Date.now();
   sessionSummary = stored.summary || '';
+  sessionSummaryModel = stored.summaryModel || '';
   sessionLog.length = 0;
   transcriptLog.length = 0;
   keyPointsLog.length = 0;
@@ -117,6 +120,7 @@ function logKeyPoint(kp) {
     quote: kp.quote || '',
     speaker: kp.speaker || null,
     model: kp.model || '',
+    modelId: kp.modelId || '',
     verdict: '',
     verdictExplanation: '',
     sources: [],
@@ -193,7 +197,13 @@ function headAndTail(text, max) {
   return text.slice(0, half) + ' […] ' + text.slice(-half);
 }
 
-function setSummary(text) { sessionSummary = text || ''; persistSession(); }
+// Which provider AND model wrote the summary: with a model-level fallback in the proxy,
+// "Mistral" alone doesn't say whether the big model answered or a smaller one took over.
+function setSummary(text, provider, modelId) {
+  sessionSummary = text || '';
+  sessionSummaryModel = text ? [providerLabel(provider), modelId].filter(Boolean).join(' · ') : '';
+  persistSession();
+}
 
 // Is there anything worth saving? Used by the ✕ guard: an empty session closes without
 // asking, one with content offers to export first.
@@ -214,6 +224,7 @@ function startSession(id) {
   transcriptLog.length = 0;
   keyPointsLog.length = 0;
   sessionSummary = '';
+  sessionSummaryModel = '';
   sessionStartTime = Date.now();
   sessionId = (id === undefined || id === null) ? Date.now() : id;
   persistSession();
@@ -318,7 +329,8 @@ function exportPDF() {
         const catColor = catMeta ? catMeta.color : '#64748b';
         const spk = kp.speaker ? '<span class="kp-speaker" style="color:' + speakerColor(kp.speaker) + '">' + escapeHtml(kp.speaker) + '</span>' : '';
         const modelTag = kp.model
-          ? '<span class="kp-model">' + escapeHtml(t('ov_via') + ' ' + providerLabel(kp.model)) + '</span>'
+          ? '<span class="kp-model">' + escapeHtml(t('ov_via') + ' ' + providerLabel(kp.model) +
+            (kp.modelId ? ' · ' + kp.modelId : '')) + '</span>'
           : '';
         const quote = kp.quote ? '<div class="kp-quote">“' + escapeHtml(kp.quote) + '”</div>' : '';
         let verdict = '';
@@ -346,7 +358,8 @@ function exportPDF() {
     : '';
 
   const summaryHTML = sessionSummary
-    ? '<div class="summary-box"><div class="summary-box-title">' + escapeHtml(t('ex_summary')) + '</div>' +
+    ? '<div class="summary-box"><div class="summary-box-title">' + escapeHtml(t('ex_summary')) +
+      (sessionSummaryModel ? ' <span class="kp-model">' + escapeHtml(t('ov_via') + ' ' + sessionSummaryModel) + '</span>' : '') + '</div>' +
       '<div class="summary-box-text">' + escapeHtml(sessionSummary) + '</div></div>'
     : '';
 
