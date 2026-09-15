@@ -302,6 +302,11 @@ async function requestGladiaSession(translate) {
     language_config: sourceLanguage === 'auto'
       ? { languages: [], code_switching: true }
       : { languages: [sourceLanguage], code_switching: false },
+    // Whole sentences instead of fragments. Gladia's defaults (0.05 s of silence ends an
+    // utterance, 5 s maximum) cut a speaker mid-sentence, and each piece was translated on
+    // its own — one reversed the meaning. These are Gladia's recommended meeting values.
+    endpointing: 0.4,
+    maximum_duration_without_endpointing: 15,
     realtime_processing: {
       words_accurate_timestamps: true,
     },
