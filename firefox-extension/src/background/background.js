@@ -188,7 +188,17 @@ If nothing is noteworthy, return {"points": []}.`;
 
 // What a translation must carry over untouched. A small model "localises" otherwise: it
 // swapped a politician's name for another, and turned "en français" into "in Spanish".
-const TRANSLATE_KEEP = 'Keep every name, number, title, language, country and place exactly as the text says — translate the words, never replace one of these with a different one.';
+const TRANSLATE_KEEP = 'Plain text only: no Markdown (no ** or #) and no original-script words added in parentheses. Keep every name, number, title, language, country and place as the text says — a name written in a non-Latin script goes in its usual Latin-script form — translate the words, never replace one of these with a different one.';
+
+// Small models format anyway (a Mandarin session got **bold** names in the AI translations
+// and *italics* in the summary), so the output is cleaned in code, not just asked for.
+function stripMarkdown(text) {
+  return String(text || '')
+    .replace(/\*\*(.+?)\*\*/gs, '$1')
+    .replace(/__(.+?)__/gs, '$1')
+    .replace(/(^|[\s(])\*(\S(?:.*?\S)?)\*(?=[\s).,;:!?]|$)/gm, '$1$2')
+    .replace(/^#{1,6}\s+/gm, '');
+}
 
 function translatePrompt(sourceCode) {
   const L = promptLang();
@@ -1107,8 +1117,8 @@ async function translateLine(text, report, sourceCode, shouldStop) {
     aiRequested = true;
     callClaude(text, translatePrompt(source), false, 768, false, true)
       .then(r => {
-        const out = (r.text || '').trim();
-        if (out && !settled) report(out, 'ai');
+        const out = stripMarkdown(r.text).trim();
+        if (out && !settled && !stopped()) report(out, 'ai');
       })
       .catch(() => {});
   };
@@ -1237,6 +1247,7 @@ function findGladiaLine(tr) {
 // "translation" is refused and the line goes to the fallbacks. The script test assumes a
 // Latin-script target, which holds for both UI languages (es, en).
 function looksUntranslated(original, translation) {
+  const squeeze = s => String(s || '').toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '');
   const tr = squeeze(translation);
   if (!tr || tr === squeeze(original)) return true;
   const letters = [...tr].filter(c => /\p{L}/u.test(c));
