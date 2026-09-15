@@ -149,10 +149,16 @@ function updateKeyPointVerdict(id, result) {
   persistSession();
 }
 
-// Compact input for the final summary: prefer the curated key points; fall back to
-// the (capped) transcript if there are none yet.
+// Input for the final summary: the key points AND the transcript. Key points alone left
+// the model with too little: a Mandarin briefing with a single key point got a summary
+// about that one topic, padded with background nobody said, while most of what was said
+// was missing. The transcript is only left out of a long session that already has enough
+// key points to stand for it.
+const SUMMARY_TRANSCRIPT_CHARS = 8000;
+const SUMMARY_ENOUGH_KEYPOINTS = 5;
+
 function buildSummaryInput() {
-  const title = document.title || '';
+  const parts = [t('ex_title_label') + ' ' + (document.title || '')];
   if (keyPointsLog.length) {
     const lines = keyPointsLog.map(kp => {
       const spk = kp.speaker ? kp.speaker + ': ' : '';
@@ -160,14 +166,31 @@ function buildSummaryInput() {
       const v = kp.verdict ? ' [' + promptLang().verifiedMarker + ': ' + kp.verdict + ']' : '';
       return '- [' + (kp.timecode || '') + '] ' + spk + kp.point + v;
     });
-    return t('ex_title_label') + ' ' + title + '\n\n' + t('ex_kp_label') + '\n' + lines.join('\n');
+    parts.push(t('ex_kp_label') + '\n' + lines.join('\n'));
   }
   // What was actually SAID — never the translations. The summary prompt already writes in
   // the UI language, and an AI translation can rewrite content: preferring translations
   // put a name the translator had invented straight into a summary. Model-change markers
   // have no text and used to be joined in as the literal word "undefined".
-  const tr = transcriptLog.filter(x => !x.modelChange && x.text).map(x => x.text).join(' ');
-  return t('ex_title_label') + ' ' + title + '\n\n' + t('ex_tr_label') + '\n' + tr.slice(0, 8000);
+  const spoken = transcriptLog.filter(x => !x.modelChange && x.text);
+  const tr = spoken.map(x => x.text).join(' ');
+  const fits = tr.length <= SUMMARY_TRANSCRIPT_CHARS;
+  if (tr && (fits || keyPointsLog.length < SUMMARY_ENOUGH_KEYPOINTS)) {
+    parts.push(t('ex_tr_label') + '\n' + headAndTail(tr, SUMMARY_TRANSCRIPT_CHARS));
+    // Gladia's machine translation as a reading aid, never the AI's: when recognition
+    // garbled a name (高市早苗 → "高市扫描"), the model swapped in the prime minister it knew,
+    // while Gladia had translated "Takaichi". summaryPrompt() says the original wins.
+    const mt = spoken.filter(x => x.translationSource === 'gladia' && x.translation).map(x => x.translation).join(' ');
+    if (mt) parts.push(t('ex_mt_label') + '\n' + headAndTail(mt, SUMMARY_TRANSCRIPT_CHARS));
+  }
+  return parts.join('\n\n');
+}
+
+// Too long: keep the opening and the end rather than only the opening.
+function headAndTail(text, max) {
+  if (text.length <= max) return text;
+  const half = max / 2;
+  return text.slice(0, half) + ' […] ' + text.slice(-half);
 }
 
 function setSummary(text) { sessionSummary = text || ''; persistSession(); }

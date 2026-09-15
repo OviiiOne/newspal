@@ -220,11 +220,19 @@ No text outside the JSON object.`;
 
 function summaryPrompt() {
   const L = promptLang();
-  return `You are summarizing a live press conference for a professional who reads ${L.name}. The user gives you the key points (and maybe a transcript). Write a TRUE NARRATIVE SUMMARY in ${L.name.toUpperCase()}, in PLAIN TEXT (no Markdown symbols like # or *).
+  return `You are summarizing a live press conference for a professional who reads ${L.name}. The user gives you the key points (if any) and usually the transcript of what was said, in its original language. Write a TRUE NARRATIVE SUMMARY in ${L.name.toUpperCase()}, in PLAIN TEXT (no Markdown symbols like # or *).
 
-CRITICAL: the key points are ALREADY listed separately in the report, so do NOT repeat them. This must be a SYNTHESIS in flowing prose — NOT a list. Absolutely NO bullet points, NO "• ", NO enumerating the points one by one. Instead, weave them into 2–4 connected paragraphs that explain what the event was about, who said what, the main lines of argument, the most significant decisions/figures/positions, and the overall takeaway. Group related points, drop repetition, and connect ideas with prose.
+CRITICAL: the key points are ALREADY listed separately in the report, so do NOT repeat them. This must be a SYNTHESIS in flowing prose — NOT a list. Absolutely NO bullet points, NO "• ", NO enumerating the points one by one. Instead, weave what was said into connected paragraphs that explain what the event was about, who said what, the main lines of argument, the most significant decisions/figures/positions, and the overall takeaway. Group related points, drop repetition, and connect ideas with prose.
 
-Think of it as the opening paragraphs a journalist writes ABOVE the bullet list of facts: it should add understanding and context, not duplicate the list.
+COVER THE WHOLE EVENT: the key points may cover only part of it — use the transcript to include every topic that was discussed, not just the ones with a key point.
+
+LENGTH FOLLOWS THE INPUT: one short paragraph for a short or thin input, up to four for a long event. Never pad: do NOT add background, history, motives or analysis that is not in the input — if little was said, write little.
+
+The transcript comes from automatic speech recognition and may contain misheard words or a phrase that doesn't belong. If a word makes no sense in context, leave it out rather than build on it or guess what was meant.
+
+You may also get a MACHINE TRANSLATION of the transcript. It is only a reading aid and can be wrong. Use it to understand the original and to read a name that speech recognition garbled. DATES, NUMBERS and FIGURES come only from the original transcript: never take a month, year or figure that appears only in the translation. When the two disagree on anything else, prefer the original.
+
+Think of it as the opening paragraphs a journalist writes ABOVE the bullet list of facts: it should add understanding by connecting what was said, not duplicate the list.
 
 ONLY if the input explicitly marks points as "[${L.verifiedMarker}: ...]", you may add at the end a short "${L.verifHeading}" paragraph mentioning those verdicts in prose. NEVER invent or imply a fact-check, and never state that anything has been "confirmed"/"verified" unless it is marked as such in the input.
 

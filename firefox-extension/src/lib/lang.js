@@ -346,6 +346,7 @@ const I18N = {
     ex_title_label: 'Título:',
     ex_kp_label: 'Puntos clave:',
     ex_tr_label: 'Transcripción:',
+    ex_mt_label: 'Traducción automática de Gladia (solo como apoyo, puede contener errores):',
   },
   en: {
     // Popup
@@ -510,6 +511,7 @@ const I18N = {
     ex_title_label: 'Title:',
     ex_kp_label: 'Key points:',
     ex_tr_label: 'Transcript:',
+    ex_mt_label: 'Gladia machine translation (reading aid only, may contain errors):',
   },
 };
 
