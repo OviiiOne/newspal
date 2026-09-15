@@ -331,8 +331,19 @@ function exportPDF() {
   // Resolved out here: the map below names its item `t`, which shadows the i18n t().
   const aiBadgeHTML = '<span class="ai-badge" title="' + escapeHtml(t('ov_ai_badge_title')) + '">' +
     escapeHtml(t('ov_ai_badge')) + '</span>';
+  const engineTitles = { gladia: t('ov_tr_by_gladia'), google: t('ov_tr_by_google'), ai: t('ov_ai_badge_title') };
+  // How many lines each translator ended up owning — the numbers to judge the engines by.
+  const trCounts = { gladia: 0, google: 0, ai: 0 };
+  transcriptLog.forEach(x => {
+    if (!x.modelChange && x.translation && x.translation.trim() && x.translation.trim() !== (x.text || '').trim() &&
+        trCounts[x.translationSource] !== undefined) trCounts[x.translationSource]++;
+  });
+  const trCountsHTML = (trCounts.gladia + trCounts.google + trCounts.ai)
+    ? '<div class="transcript-model">' + escapeHtml(fmt(t('ex_tr_counts'), trCounts)) + '</div>'
+    : '';
   const transcriptHTML = transcriptLog.length
     ? '<div class="claims-title">' + escapeHtml(t('ex_transcript')) + ' (' + transcriptLog.filter(x => !x.modelChange).length + ')</div>' +
+      trCountsHTML +
       '<div class="transcript">' +
         transcriptLog.map(t => {
           // Model-change marker (not a spoken line): render inline in the flow.
@@ -347,7 +358,8 @@ function exportPDF() {
           }
           const isAi = t.translationSource === 'ai';
           const tr = (t.translation && t.translation.trim() && t.translation.trim() !== (t.text || '').trim())
-            ? '<div class="transcript-tr' + (isAi ? ' transcript-tr-ai' : '') + '">↳ ' +
+            ? '<div class="transcript-tr' + (isAi ? ' transcript-tr-ai' : '') + '"' +
+              (engineTitles[t.translationSource] ? ' title="' + escapeHtml(engineTitles[t.translationSource]) + '"' : '') + '>↳ ' +
               (isAi ? aiBadgeHTML : '') + escapeHtml(t.translation) + '</div>'
             : '';
           return spkHTML + '<div class="transcript-line">' +

@@ -534,6 +534,7 @@ function setLineTranslation(line, text, translation, source) {
     line.appendChild(tr);
   }
   tr.className = 'rtfc-tr' + (source === 'ai' ? ' rtfc-tr-ai' : '');
+  tr.title = translationEngineTitle(source);
   tr.textContent = '↳ ';
   if (source === 'ai') {
     const badge = document.createElement('span');
@@ -543,6 +544,15 @@ function setLineTranslation(line, text, translation, source) {
     tr.appendChild(badge);
   }
   tr.appendChild(document.createTextNode(translation));
+}
+
+// Which engine produced a translation, shown on hover ('gladia' | 'google' | 'ai').
+// Lines restored from an older backup have no source recorded: no title then.
+function translationEngineTitle(source) {
+  if (source === 'gladia') return t('ov_tr_by_gladia');
+  if (source === 'google') return t('ov_tr_by_google');
+  if (source === 'ai') return t('ov_ai_badge_title');
+  return '';
 }
 
 // A translation arriving after its line is already on screen.

@@ -1083,8 +1083,11 @@ function notifyTranslator(label) {
 // content. Google keeps retrying meanwhile, and if it gets through it REPLACES the AI
 // version. A late AI answer never overwrites Google's. When Google succeeds on its first
 // try, the AI is never called — so no request quota is spent on lines that didn't need it.
-async function translateLine(text, report, sourceCode) {
+// `shouldStop()` (optional) ends the work early once a better translation arrived
+// elsewhere (Gladia's): no more retries, no AI call, and it doesn't count as a failure.
+async function translateLine(text, report, sourceCode, shouldStop) {
   if (!text || !text.trim()) return;
+  const stopped = () => !!(shouldStop && shouldStop());
   const target = getUiLang();
   const source = baseLang(sourceCode);
   let settled = false;   // Google has the final word
@@ -1092,7 +1095,7 @@ async function translateLine(text, report, sourceCode) {
   let lastError = null;
 
   const askAi = () => {
-    if (aiRequested) return;
+    if (aiRequested || stopped()) return;
     aiRequested = true;
     callClaude(text, translatePrompt(source), false, 768, false, true)
       .then(r => {
@@ -1107,8 +1110,10 @@ async function translateLine(text, report, sourceCode) {
 
   for (const delay of GOOGLE_TRANSLATE_DELAYS) {
     if (delay) await new Promise(r => setTimeout(r, delay));
+    if (stopped()) return;
     try {
       const { translated, detected } = await translateWithGoogle(text, target);
+      if (stopped()) return;
       settled = true;
       googleFailedLines = 0;
       if (googleWasPaused) { googleWasPaused = false; notifyTranslator(t('bg_gt_recovered')); }
@@ -1124,6 +1129,7 @@ async function translateLine(text, report, sourceCode) {
     } catch (err) {
       lastError = err;
     }
+    if (stopped()) return;
     askAi();
     if (Date.now() < googlePausedUntil) return; // another line tripped the breaker meanwhile
   }
@@ -1148,6 +1154,137 @@ function getClockTimecode() {
 // Identifies a final transcript line so its translation can find it later. Time-based,
 // so ids never collide with lines restored from a backup after a browser restart.
 let transcriptLineSeq = 0;
+
+// ── Gladia's live translation ─────────────────────────────────────────────────
+// Gladia translates every utterance itself, in the same pipeline as the transcription, so
+// it is the primary translator; Google and then the AI only step in for a line Gladia
+// hasn't translated within GLADIA_TRANSLATION_WAIT_MS. Its answer always wins: it replaces
+// a fallback version already on screen, and fallback reports that come later are dropped.
+//
+// Matching a translation to its line: Gladia's docs show different formats for the
+// transcript's `id` and the translation's `utterance_id`, so the id may not match. Then
+// the utterance's start/end times, then its exact original text. Which one matched is
+// logged, as evidence while this is on trial.
+const GLADIA_TRANSLATION_WAIT_MS = 5000;
+const GLADIA_EARLY_TRANSLATION_TTL_MS = 15000; // a translation that beat its line waits this long
+const GLADIA_MAX_LINES = 300;
+const GLADIA_TIME_TOLERANCE_S = 0.05;
+const GLADIA_SILENT_LINES = 3; // lines that fell back with no Gladia translation ever seen
+let gladiaTranslationActive = false;
+let gladiaGeneration = 0;      // bumped per Gladia session: utterance ids restart on reconnect
+let gladiaLines = [];          // recent final lines, oldest first
+let gladiaEarlyTranslations = [];
+let gladiaTranslationsSeen = 0;
+let gladiaFallbackLines = 0;
+let gladiaTranslatorAnnounced = false;
+
+function resetGladiaTranslation() {
+  gladiaTranslationActive = false;
+  gladiaLines = [];
+  gladiaEarlyTranslations = [];
+  gladiaTranslationsSeen = 0;
+  gladiaFallbackLines = 0;
+  gladiaTranslatorAnnounced = false;
+}
+
+// `model` is Gladia's translation model, named in the marker so each export records which
+// one produced it, and in the console so runs can be told apart there too.
+function onGladiaSession(translation, model) {
+  gladiaGeneration++;
+  gladiaEarlyTranslations = [];
+  gladiaTranslationActive = !!translation;
+  console.log(`[translate] ── Gladia session started — translation ${gladiaTranslationActive ? 'on, model ' + (model || '?') : 'off'} ──`);
+  if (gladiaTranslationActive && !gladiaTranslatorAnnounced) {
+    gladiaTranslatorAnnounced = true;
+    notifyTranslator(fmt(t('bg_tr_gladia_on'), { model: model || '?' }));
+  }
+}
+
+function sameGladiaTime(a, b) {
+  return typeof a === 'number' && typeof b === 'number' && Math.abs(a - b) <= GLADIA_TIME_TOLERANCE_S;
+}
+
+const GLADIA_MATCHERS = [
+  ['id', (line, tr) => line.utteranceId != null && tr.utteranceId != null && String(line.utteranceId) === String(tr.utteranceId)],
+  ['time', (line, tr) => sameGladiaTime(line.start, tr.start) && sameGladiaTime(line.end, tr.end)],
+  ['text', (line, tr) => !!tr.original && line.text.trim() === tr.original],
+];
+
+// The newest untranslated line of this Gladia session that `tr` belongs to.
+function findGladiaLine(tr) {
+  for (const [method, matches] of GLADIA_MATCHERS) {
+    for (let i = gladiaLines.length - 1; i >= 0; i--) {
+      const line = gladiaLines[i];
+      if (!line.gladiaDone && !line.gladiaRejected && line.generation === gladiaGeneration && matches(line, tr)) {
+        return { line, method };
+      }
+    }
+  }
+  return null;
+}
+
+// Gladia sometimes hands back the original instead of a translation: in a Mandarin
+// session 5 of 33 lines came back as the Chinese text split into words with spaces, one
+// with only its last clause translated. Its live API has no way to ask again, so such a
+// "translation" is refused and the line goes to the fallbacks. The script test assumes a
+// Latin-script target, which holds for both UI languages (es, en).
+function looksUntranslated(original, translation) {
+  const tr = squeeze(translation);
+  if (!tr || tr === squeeze(original)) return true;
+  const letters = [...tr].filter(c => /\p{L}/u.test(c));
+  const foreign = letters.filter(c => !/\p{Script=Latin}/u.test(c)).length;
+  if (foreign >= 10 || (letters.length && foreign / letters.length > 0.3)) return true;
+  // Same script as the target (e.g. Finnish): most words carried over unchanged. Names
+  // (capitalised) and numbers are the same in every language, so they don't count.
+  const words = s => String(s || '').split(/[\s\p{P}\p{S}]+/u).filter(Boolean);
+  const originalWords = new Set(words(original).map(w => w.toLowerCase()));
+  const plain = words(translation).filter(w => !/\d/.test(w) && w === w.toLowerCase());
+  return plain.length >= 3 && plain.filter(w => originalWords.has(w)).length / plain.length >= 0.8;
+}
+
+function applyGladiaTranslation(line, tr, method) {
+  const untranslated = line.needs && looksUntranslated(line.text, tr.text);
+  console.log(`[translate] gladia matched by ${method}, ${Date.now() - line.at} ms after its line` +
+    (!line.needs ? ' (line needs no translation: ignored)'
+      : untranslated ? ' — came back UNTRANSLATED, the fallbacks take over' : ''));
+  if (untranslated) {
+    line.gladiaRejected = true;
+    if (line.startFallback) line.startFallback();
+    return;
+  }
+  line.gladiaDone = true;
+  if (!line.needs || activeTabId !== line.tabId) return;
+  sendToTab(line.tabId, { type: 'TRANSCRIPT_TRANSLATION', lineId: line.lineId, translation: tr.text, source: 'gladia' });
+}
+
+function onGladiaTranslation(tr) {
+  if (!activeTabId || !tr || !tr.text) return;
+  gladiaTranslationsSeen++;
+  const now = Date.now();
+  gladiaEarlyTranslations = gladiaEarlyTranslations.filter(x => {
+    if (now - x.at < GLADIA_EARLY_TRANSLATION_TTL_MS) return true;
+    console.warn('[translate] gladia translation never matched a line:', x.tr);
+    return false;
+  });
+  const found = findGladiaLine(tr);
+  if (found) applyGladiaTranslation(found.line, tr, found.method);
+  else gladiaEarlyTranslations.push({ tr, at: now });
+}
+
+function rememberGladiaLine(line) {
+  gladiaLines.push(line);
+  if (gladiaLines.length > GLADIA_MAX_LINES) gladiaLines.shift();
+  for (const [method, matches] of GLADIA_MATCHERS) {
+    const i = gladiaEarlyTranslations.findIndex(x => matches(line, x.tr));
+    if (i >= 0) {
+      const { tr } = gladiaEarlyTranslations.splice(i, 1)[0];
+      console.log('[translate] gladia translation arrived before its line');
+      applyGladiaTranslation(line, tr, method);
+      break;
+    }
+  }
+  return line;
+}
 
 function relayTranscript(msg, timecode) {
   if (!activeTabId) return;
@@ -1175,12 +1312,40 @@ function relayTranscript(msg, timecode) {
     lineId,
   });
 
-  if (!msg.isFinal || !needsTranslation(msg.language)) return;
-  translateLine(msg.text, (text, source) => {
+  if (!msg.isFinal) return;
+  const needs = needsTranslation(msg.language);
+  const report = (text, source) => {
     // The session may have ended, or moved to another tab, while we were translating.
     if (activeTabId !== tabId) return;
     sendToTab(tabId, { type: 'TRANSCRIPT_TRANSLATION', lineId, translation: text, source });
-  }, msg.language);
+  };
+
+  if (!gladiaTranslationActive) {
+    if (needs) translateLine(msg.text, report, msg.language);
+    return;
+  }
+
+  // Every final line is remembered, even one that needs no translation: Gladia translates
+  // them all, and its translation must find its own line rather than a neighbour's.
+  const line = {
+    lineId, tabId, text: msg.text, needs, at: Date.now(), gladiaDone: false, gladiaRejected: false,
+    generation: gladiaGeneration, utteranceId: msg.utteranceId ?? null,
+    start: msg.start ?? null, end: msg.end ?? null,
+  };
+  const gladiaWon = () => line.gladiaDone || activeTabId !== tabId;
+  // Runs once: when Gladia is late, or at once when its answer came back untranslated.
+  let fallbackStarted = false;
+  line.startFallback = () => {
+    if (!needs || fallbackStarted || gladiaWon()) return;
+    fallbackStarted = true;
+    if (!line.gladiaRejected && gladiaTranslationsSeen === 0 && ++gladiaFallbackLines === GLADIA_SILENT_LINES) {
+      console.warn('[translate] gladia has sent no translation yet — the fallbacks are translating');
+      notifyTranslator(t('bg_tr_gladia_silent'));
+    }
+    translateLine(msg.text, (text, source) => { if (!line.gladiaDone) report(text, source); }, msg.language, gladiaWon);
+  };
+  rememberGladiaLine(line);
+  if (needs) setTimeout(line.startFallback, GLADIA_TRANSLATION_WAIT_MS);
 }
 
 // ── Messages ──────────────────────────────────────────────────────────────────
@@ -1257,6 +1422,11 @@ browser.runtime.onMessage.addListener((msg, sender) => {
     // it just to end it, freeing the slot before asking for a new one.
     case 'GLADIA_SESSION':
       gladiaSessionUrl = msg.url || null;
+      onGladiaSession(msg.translation, msg.translationModel);
+      return Promise.resolve();
+
+    case 'GLADIA_TRANSLATION':
+      onGladiaTranslation(msg);
       return Promise.resolve();
 
     case 'CAPTURE_READY':
@@ -1372,6 +1542,7 @@ async function startFactCheck() {
   captureClaimedBy = null;
   captureMode = null;
   gladiaSessionUrl = null;
+  resetGladiaTranslation();
 
   await sendToTab(activeTabId, { type: 'START_FACTCHECK', sessionId, resume: false });
   return { ok: true };
@@ -1394,6 +1565,7 @@ function stopFactCheck() {
   activeTabId = null;
   sessionId = null;
   gladiaSessionUrl = null;
+  resetGladiaTranslation();
   isCapturing = false;
 }
 
