@@ -1271,7 +1271,34 @@ function looksUntranslated(original, translation) {
   const words = s => String(s || '').split(/[\s\p{P}\p{S}]+/u).filter(Boolean);
   const originalWords = new Set(words(original).map(w => w.toLowerCase()));
   const plain = words(translation).filter(w => !/\d/.test(w) && w === w.toLowerCase());
-  return plain.length >= 3 && plain.filter(w => originalWords.has(w)).length / plain.length >= 0.8;
+  if (plain.length >= 3 && plain.filter(w => originalWords.has(w)).length / plain.length >= 0.8) return true;
+  // A PART of the line can come back untranslated: a German line arrived with its
+  // beginning and its end in Spanish and the middle still in German, which neither test
+  // above sees. A stretch of words copied verbatim, in order, from the original is the
+  // signature — a real translation never reproduces a whole clause word for word.
+  return longestCopiedRun(original, translation) >= COPIED_RUN_WORDS;
+}
+
+const COPIED_RUN_WORDS = 6;
+
+// Longest run of consecutive words present, in the same order, in both texts.
+function longestCopiedRun(original, translation) {
+  const words = s => String(s || '').toLowerCase().normalize('NFD').replace(/\p{M}/gu, '')
+    .split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  const a = words(original), b = words(translation);
+  if (!a.length || !b.length) return 0;
+  let best = 0;
+  const row = new Array(a.length + 1).fill(0);
+  for (let i = 1; i <= b.length; i++) {
+    let diagonal = 0;
+    for (let j = 1; j <= a.length; j++) {
+      const above = row[j];
+      row[j] = b[i - 1] === a[j - 1] ? diagonal + 1 : 0;
+      if (row[j] > best) best = row[j];
+      diagonal = above;
+    }
+  }
+  return best;
 }
 
 function applyGladiaTranslation(line, tr, method) {
