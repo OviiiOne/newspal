@@ -116,7 +116,7 @@ nothing is collected by this repo.
 
 This repository is published on
 [GitHub](https://github.com/OviiiOne/newspal) and
-[Tangled](https://tangled.org/oviiione.eurosky.social/newspal).
+[Tangled](https://tangled.org/did:plc:esping2jbytufyhheu2aqdf4).
 
 ## License
 
