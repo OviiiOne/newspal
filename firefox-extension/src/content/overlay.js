@@ -1596,6 +1596,22 @@ browser.runtime.onMessage.addListener((msg) => {
       break;
     }
 
+    // The same statement came back with more context (often completing a ⭐ fragment).
+    // One card: its text is replaced, and the ✏️ is there if it went too far.
+    case 'EXPAND_KEYPOINT': {
+      for (const card of kpCards.values()) {
+        if (!card._kpData || card._kpData.point !== msg.previous) continue;
+        const pointEl = card.querySelector('.rtfc-kp-point');
+        if (!pointEl || card.querySelector('.rtfc-kp-edit')) break; // he is editing it right now
+        card._kpData.point = msg.point;
+        pointEl.textContent = msg.point;
+        pointEl.title = t('ov_kp_expanded_title');
+        if (typeof updateKeyPointText === 'function') updateKeyPointText(card._kpData._id, msg.point);
+        break;
+      }
+      break;
+    }
+
     case 'NEW_KEYPOINTS':
       if (msg.results) {
         for (const kp of msg.results) addKeyPoint(kp);

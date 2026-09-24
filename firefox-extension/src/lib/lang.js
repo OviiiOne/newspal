@@ -303,6 +303,7 @@ const I18N = {
     ov_kp_speaker_unset: '+ ¿quién?',
     ov_kp_speaker_edit_title: 'Cambiar el hablante (se añadirá a participantes)',
     ov_kp_speaker_set_title: 'Poner nombre al hablante (se añadirá a participantes)',
+    ov_kp_expanded_title: 'Ampliado con lo que se dijo después — el lápiz lo recorta',
     ov_kp_speaker_ph: 'Nombre del hablante',
     // LLM chain
     bg_llm_all_failed: 'Ningún modelo de IA ha respondido, así que no habrá puntos clave ni resumen. Detalle — {detail}',
@@ -469,6 +470,7 @@ const I18N = {
     ov_kp_speaker_unset: '+ who?',
     ov_kp_speaker_edit_title: 'Change the speaker (added to participants)',
     ov_kp_speaker_set_title: 'Name the speaker (added to participants)',
+    ov_kp_expanded_title: 'Expanded with what was said afterwards — the pencil trims it',
     ov_kp_speaker_ph: 'Speaker name',
     // LLM chain
     bg_llm_all_failed: 'No AI model answered, so there will be no key points or summary. Detail — {detail}',
