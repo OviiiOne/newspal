@@ -162,7 +162,12 @@ const SUMMARY_TRANSCRIPT_CHARS = 8000;
 const SUMMARY_ENOUGH_KEYPOINTS = 5;
 
 function buildSummaryInput() {
-  const parts = [t('ex_title_label') + ' ' + (document.title || '')];
+  // The date matters as much as the text: without it the model dated the event by its own
+  // frozen knowledge and announced as upcoming a meeting the speakers described as past.
+  const d = new Date(sessionStartTime || Date.now());
+  const p = n => String(n).padStart(2, '0');
+  const when = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  const parts = [t('ex_title_label') + ' ' + (document.title || ''), t('ex_when_label') + ' ' + when];
   if (keyPointsLog.length) {
     const lines = keyPointsLog.map(kp => {
       const spk = kp.speaker ? kp.speaker + ': ' : '';

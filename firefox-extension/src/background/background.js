@@ -246,7 +246,9 @@ Think of it as the opening paragraphs a journalist writes ABOVE the bullet list 
 
 ONLY if the input explicitly marks points as "[${L.verifiedMarker}: ...]", you may add at the end a short "${L.verifHeading}" paragraph mentioning those verdicts in prose. NEVER invent or imply a fact-check, and never state that anything has been "confirmed"/"verified" unless it is marked as such in the input.
 
-Mind the temporal context: if a point is a historical reference or a retelling of past events, present it as such — NEVER turn history into current events, plans or threats, and never infer intentions beyond what was literally said.
+Mind the temporal context: if a point is a historical reference or a retelling of past events, present it as such — NEVER turn history into current events, plans or threats, and never infer intentions beyond what was literally said. The input gives the date and time the event is taking place: it is happening NOW, so keep every statement in the tense the transcript uses — what a speaker describes as already done must not become something still to come.
+
+Roles: never add a status qualifier of your own (former, ex-, outgoing, interim, acting, -elect). Use the plain title unless the input itself says otherwise — your knowledge of who currently holds an office may simply be out of date.
 
 Be concise and neutral. Report only what was said; do not assess truth yourself. You may give a person the role or title you know them by, even if it may be out of date, but never make one up when you don't actually know it. People's NAMES, however, come only from the input: use them as they appear there, and never add a person who isn't in it or put a different person in their place — the same goes for which country someone represents. Return only the summary text.`;
 }
@@ -590,6 +592,7 @@ let windowLexical = { rates: { hedging: 0, certainty: 0, filler: 0, emotional: 0
 let windowStartTime = null;
 let pageTitle = '';
 let pageDate = '';
+let sessionStartedAt = null; // when HE pressed Start — the date the prompts get
 let currentSpeakerId = null;
 let lastSpeakerId = null;
 let speakerIdToName = {};
@@ -796,8 +799,18 @@ async function groundAndUpdate(contextText, fastResults, title, lexicalSummary, 
 // ⭐ ones, so they stay in sync: Gladia gives us no speaker labels, so the model infers
 // who is speaking, constrained to the user's Participants (or names parsed from the
 // title). Anyone not listed → "Otro"; only null when truly impossible.
+// "2026-09-24 16:22" — unambiguous for a model, unlike a locale-formatted date.
+function clockDateTime(ms) {
+  const d = new Date(ms || Date.now());
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 function buildParticipantContext(title) {
-  const dateContext = pageDate ? `\nDate: ${pageDate}` : '';
+  // The page almost never publishes a date, and without one the model dates the event by
+  // its own (frozen) knowledge: it turned "last May, we created the Board of Trade" into a
+  // plan for a visit still to come. The clock is the reliable source — we are watching live.
+  const dateContext = `\nDate and time, happening live right now: ${pageDate || clockDateTime(sessionStartedAt)}`;
   const participantList = PARTICIPANTS
     ? PARTICIPANTS.split(',').map(s => s.trim()).filter(Boolean)
     : parseSpeakersFromTitle(title || '');
@@ -1601,6 +1614,7 @@ async function startFactCheck() {
   captureClaimedBy = null;
   captureMode = null;
   gladiaSessionUrl = null;
+  sessionStartedAt = Date.now();
   resetGladiaTranslation();
 
   await sendToTab(activeTabId, { type: 'START_FACTCHECK', sessionId, resume: false });
@@ -1612,6 +1626,7 @@ function stopFactCheck() {
   recentClaims.clear();
   pageTitle = '';
   pageDate = '';
+  sessionStartedAt = null;
   captureClaimedBy = null;
 
   if (!isCapturing) return;
