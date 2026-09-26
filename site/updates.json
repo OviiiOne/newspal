@@ -13,6 +13,10 @@
         {
           "version": "2.3.4",
           "update_link": "https://oviiione.tngl.io/newspal/newspal-2.3.4-signed.xpi"
+        },
+        {
+          "version": "2.4.0",
+          "update_link": "https://oviiione.tngl.io/newspal/newspal-2.4.0-signed.xpi"
         }
       ]
     }
