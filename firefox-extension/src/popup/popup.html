@@ -6,38 +6,119 @@
 </head>
 <body>
   <div class="popup">
-    <div class="header">
-      <span class="logo">⬡</span>
-      <span class="title">NewsPal</span>
-      <span class="version" id="popupVersion"></span>
-      <button class="settings-btn" id="settingsBtn" data-i18n-title="p_settings_btn_title">⚙</button>
-    </div>
-
-    <div class="status" id="status">Inactive</div>
-
-    <div class="keys-section" id="keysSection">
-
-      <div class="key-field">
-        <label class="key-label" data-i18n="p_lbl_source_lang">Idioma de la rueda de prensa</label>
-        <input class="key-input lang-search" id="sourceLanguageSearch" type="text" data-i18n-ph="p_source_lang_search_ph" />
-        <select class="key-input" id="sourceLanguage"></select>
-        <div class="source-lang-hint" data-i18n="p_source_lang_hint"></div>
+    <!-- Main view: only what you touch to start a session. -->
+    <div class="view" id="mainView">
+      <div class="header">
+        <span class="logo">⬡</span>
+        <span class="title">NewsPal</span>
+        <span class="version" id="popupVersion"></span>
+        <button class="settings-btn" id="settingsBtn" data-i18n-title="p_settings_btn_title">⚙</button>
       </div>
 
-      <div class="key-field">
-        <label class="key-label"><span data-i18n="p_lbl_participants">Participantes</span> <span class="optional" data-i18n="p_optional">(opcional)</span></label>
-        <input class="key-input" id="participants" type="text" data-i18n-ph="p_ph_participants" placeholder="" autocomplete="off"/>
-      </div>
-      <div class="gladia-hint" data-i18n="p_participants_hint"></div>
+      <div class="status" id="status">Inactive</div>
 
-      <div class="key-hint" id="keyHint"></div>
+      <div class="keys-section" id="keysSection">
+
+        <div class="key-field">
+          <label class="key-label" data-i18n="p_lbl_source_lang">Idioma de la rueda de prensa</label>
+          <input class="key-input lang-search" id="sourceLanguageSearch" type="text" data-i18n-ph="p_source_lang_search_ph" />
+          <select class="key-input" id="sourceLanguage"></select>
+          <div class="source-lang-hint" data-i18n="p_source_lang_hint"></div>
+        </div>
+
+        <div class="key-field">
+          <label class="key-label"><span data-i18n="p_lbl_participants">Participantes</span> <span class="optional" data-i18n="p_optional">(opcional)</span></label>
+          <input class="key-input" id="participants" type="text" data-i18n-ph="p_ph_participants" placeholder="" autocomplete="off"/>
+        </div>
+        <div class="gladia-hint" data-i18n="p_participants_hint"></div>
+
+        <div class="key-hint" id="keyHint"></div>
+      </div>
+
+      <button class="toggle-btn" id="toggleBtn">Start Fact-Checking</button>
+
+      <div class="firefox-note" data-i18n="p_firefox_note"></div>
     </div>
 
-    <button class="toggle-btn" id="toggleBtn">Start Fact-Checking</button>
+    <!-- Settings view: everything you configure once, shown in place of the main view. -->
+    <div class="view" id="settingsView" hidden>
+      <div class="header">
+        <button class="back-btn" id="backBtn" data-i18n-title="p_back">←</button>
+        <span class="title" data-i18n="p_settings_heading">Ajustes</span>
+      </div>
 
-    <div class="firefox-note" data-i18n="p_firefox_note"></div>
+      <div class="keys-section">
+
+        <div class="key-field">
+          <label class="key-label">Idioma / Language</label>
+          <div class="mode-toggle">
+            <button class="mode-btn" id="uiLangEs">Español</button>
+            <button class="mode-btn" id="uiLangEn">English</button>
+          </div>
+        </div>
+
+        <div class="mode-toggle">
+          <button class="mode-btn active" id="modeApiKey">API Key</button>
+          <button class="mode-btn" id="modeProxy">Proxy</button>
+        </div>
+
+        <div id="apiKeyFields">
+          <div class="key-field">
+            <label class="key-label" data-i18n="p_lbl_anthropic">Anthropic API Key</label>
+            <input class="key-input" id="anthropicKey" type="password" placeholder="sk-ant-..." autocomplete="off"/>
+          </div>
+        </div>
+
+        <div id="proxyFields" style="display:none">
+          <div class="key-field">
+            <label class="key-label" data-i18n="p_lbl_proxy_url">Proxy URL</label>
+            <input class="key-input" id="proxyUrl" type="url" placeholder="https://tu-proxy.up.railway.app" autocomplete="off"/>
+            <div class="key-hint" id="proxyStatusLine"></div>
+          </div>
+          <div class="key-field">
+            <label class="key-label" data-i18n="p_lbl_proxy_token">Token del proxy</label>
+            <input class="key-input" id="proxyToken" type="password" data-i18n-ph="p_ph_proxy_token" placeholder="" autocomplete="off"/>
+          </div>
+          <div class="key-field">
+            <label class="key-label" data-i18n="p_lbl_ai_model">Modelos de IA (cola)</label>
+            <div class="provider-chain" id="providerChain"></div>
+            <div class="provider-chain-hint" data-i18n="p_provider_chain_hint"></div>
+          </div>
+          <div class="proxy-hint" data-i18n="p_proxy_hint"></div>
+        </div>
+
+        <div class="key-field">
+          <label class="key-label"><span data-i18n="p_lbl_gladia">Gladia API Key</span> <span class="optional" data-i18n="p_optional">(opcional)</span></label>
+          <input class="key-input" id="gladiaKey" type="password" data-i18n-ph="p_ph_gladia" placeholder="" autocomplete="off"/>
+        </div>
+        <div class="gladia-hint" data-i18n="p_gladia_hint"></div>
+
+        <div class="key-field">
+          <label class="key-label" data-i18n="p_lbl_understood">Idiomas que entiendes (no traducir)</label>
+          <select class="key-input understood-select" id="understoodLanguages" multiple size="4"></select>
+        </div>
+        <div class="gladia-hint" data-i18n="p_understood_hint"></div>
+
+        <div class="key-field">
+          <label class="key-label"><span data-i18n="p_lbl_rules">Reglas aprendidas</span> <span class="optional" data-i18n="p_editable">(editable)</span></label>
+          <textarea class="key-input rules-area" id="feedbackRules" rows="5" data-i18n-ph="p_ph_rules" placeholder=""></textarea>
+        </div>
+        <div class="gladia-hint" data-i18n="p_rules_hint"></div>
+
+        <div class="key-field">
+          <label class="key-label" data-i18n="p_lbl_backup">Copia de seguridad</label>
+          <div class="backup-btns">
+            <button class="backup-btn" id="openBackupBtn" data-i18n="p_backup_open">↗ Exportar / importar…</button>
+          </div>
+        </div>
+        <div class="gladia-hint" data-i18n="p_backup_open_hint"></div>
+
+        <div class="key-hint" id="settingsKeyHint"></div>
+      </div>
+    </div>
   </div>
   <script src="../lib/lang.js"></script>
+  <script src="settings.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

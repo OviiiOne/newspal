@@ -204,6 +204,7 @@ const I18N = {
     p_source_lang_hint: 'El idioma que se HABLA en el vídeo. Ponlo en Automático o en el idioma real; si eliges otro, la transcripción saldrá en ese idioma equivocado.',
     p_opt_auto: 'Detección automática',
     p_settings_heading: 'Ajustes',
+    p_back: 'Volver',
     p_settings_btn_title: 'Ajustes (claves, proxy, idiomas, reglas, copia de seguridad)',
     p_hint_in_settings: 'Ábrelo en ⚙ Ajustes.',
     p_source_lang_search_ph: 'Busca un idioma o su código (ej. japonés, ko)…',
@@ -237,6 +238,11 @@ const I18N = {
     p_backup_not_ours: 'El archivo no parece una copia de NewsPal.',
     p_backup_empty: 'La copia no contiene datos reconocibles.',
     p_start_failed: 'Fallo: ',
+    p_checking_proxy: 'Comprobando el proxy…',
+    p_proxy_ok: '✓ Proxy conectado',
+    bg_proxy_bad_url: 'La URL del proxy no es válida. Corrígela en ⚙ Ajustes.',
+    bg_proxy_unreachable: 'No se puede conectar con el proxy. Revisa la URL en ⚙ Ajustes.',
+    bg_proxy_not_ours: 'Esa URL responde, pero no es tu proxy (estado {status}). Revisa la URL en ⚙ Ajustes.',
     p_error: 'Error: ',
     // Overlay
     ov_summary_btn: '🧾 Resumen',
@@ -287,6 +293,10 @@ const I18N = {
     ac_perm_denied: 'Permiso de audio denegado. Permite la entrada de audio para esta página.',
     ac_capture_fail: 'Fallo al capturar audio: ',
     ac_gladia_retrying: 'Gladia aún no libera la sesión anterior; reintentando ({n}/{total})…',
+    ac_gladia_unreachable_retrying: 'No se puede conectar con {target} (¿la dirección es correcta? revísala en ⚙ Ajustes); reintentando ({n}/{total})…',
+    ac_gladia_status_retrying: 'Gladia{via} respondió con error {status}; reintentando ({n}/{total})…',
+    ac_the_proxy: 'el proxy',
+    ac_gladia_unreachable: 'No se pudo conectar con {target}: revisa la dirección en ⚙ Ajustes.',
     ac_waiting_player: 'Esperando a que el vídeo vuelva a reproducirse…',
     ac_player_gone: 'No he encontrado el vídeo de la página. Dale al play y vuelve a pulsar Iniciar.',
     ac_no_audio: 'No se detectó audio. Asegúrate de que el vídeo se está reproduciendo, o elige un dispositivo de audio del sistema.',
@@ -341,6 +351,7 @@ const I18N = {
     p_source_lang_hint: 'The language SPOKEN in the video. Use Auto-detect or the real language; if you pick another, the transcript will come out in that wrong language.',
     p_opt_auto: 'Auto-detect',
     p_settings_heading: 'Settings',
+    p_back: 'Back',
     p_settings_btn_title: 'Settings (keys, proxy, languages, rules, backup)',
     p_hint_in_settings: 'Open ⚙ Settings.',
     p_source_lang_search_ph: 'Search a language or its code (e.g. japanese, ko)…',
@@ -374,6 +385,11 @@ const I18N = {
     p_backup_not_ours: 'The file does not look like a NewsPal backup.',
     p_backup_empty: 'The backup contains no recognizable data.',
     p_start_failed: 'Failed: ',
+    p_checking_proxy: 'Checking the proxy…',
+    p_proxy_ok: '✓ Proxy connected',
+    bg_proxy_bad_url: 'The proxy URL is not valid. Fix it in ⚙ Settings.',
+    bg_proxy_unreachable: 'Cannot connect to the proxy. Check the URL in ⚙ Settings.',
+    bg_proxy_not_ours: 'That URL answers, but it is not your proxy (status {status}). Check the URL in ⚙ Settings.',
     p_error: 'Error: ',
     // Overlay
     ov_summary_btn: '🧾 Summary',
@@ -424,6 +440,10 @@ const I18N = {
     ac_perm_denied: 'Audio permission denied. Allow audio input for this page.',
     ac_capture_fail: 'Audio capture failed: ',
     ac_gladia_retrying: 'Gladia has not released the previous session yet; retrying ({n}/{total})…',
+    ac_gladia_unreachable_retrying: 'Cannot connect to {target} (is the address right? check it in ⚙ Settings); retrying ({n}/{total})…',
+    ac_gladia_status_retrying: 'Gladia{via} answered with error {status}; retrying ({n}/{total})…',
+    ac_the_proxy: 'the proxy',
+    ac_gladia_unreachable: 'Could not connect to {target}: check the address in ⚙ Settings.',
     ac_waiting_player: 'Waiting for the video to start playing again…',
     ac_player_gone: 'Could not find the page video. Press play and hit Start again.',
     ac_no_audio: 'No audio detected. Make sure the video is playing, or pick a system-audio device.',
@@ -464,6 +484,11 @@ function t(key) {
   if (key in d) return d[key];
   if (key in I18N.es) return I18N.es[key];
   return key;
+}
+
+// Words a stored proxyStatus ({ state: 'bad', reason, status }) in the current UI language.
+function proxyProblemText(p) {
+  return fmt(t('bg_proxy_' + p.reason), { status: p.status });
 }
 
 function fmt(s, vars) {

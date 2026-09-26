@@ -64,25 +64,27 @@ body {
 
 .settings-btn:hover { color: #e8e8e8; }
 
-/* ── Settings page (same stylesheet, but a real tab instead of a 280px panel) ── */
+/* ── Views: main and settings share the panel; only one is shown at a time ── */
 
-body.options-body { width: auto; }
-
-.options-page {
-  max-width: 520px;
-  margin: 0 auto;
-  padding: 28px 24px 56px;
+.view {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
-.options-title {
-  font-size: 18px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  margin: 6px 0 2px;
+.view[hidden] { display: none; }
+
+.back-btn {
+  background: none;
+  border: none;
+  color: #888;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px 2px 0;
 }
+
+.back-btn:hover { color: #e8e8e8; }
 
 .status {
   font-size: 11px;

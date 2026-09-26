@@ -1,15 +1,17 @@
-// options.js — everything you configure once and forget: credentials, the model queue,
-// the languages you understand, the learned rules and the backup. The browser-action
-// popup keeps only what you touch per session. Every field saves itself on change, so
-// there is no Save button and the popup can just read storage.
+// settings.js — the popup's settings view (⚙): everything you configure once and forget:
+// credentials, the model queue, the languages you understand, the learned rules and the
+// backup. The main view keeps only what you touch per session. Every field saves itself
+// on change, so there is no Save button and popup.js just follows storage.onChanged.
+// Wrapped so its names don't clash with popup.js, which shares the page.
 
+(() => {
 const anthropicEl = document.getElementById('anthropicKey');
 const proxyUrlEl = document.getElementById('proxyUrl');
 const proxyTokenEl = document.getElementById('proxyToken');
 const gladiaEl = document.getElementById('gladiaKey');
 const understoodEl = document.getElementById('understoodLanguages');
 const feedbackRulesEl = document.getElementById('feedbackRules');
-const keyHint = document.getElementById('keyHint');
+const keyHint = document.getElementById('settingsKeyHint');
 const modeApiKeyBtn = document.getElementById('modeApiKey');
 const modeProxyBtn = document.getElementById('modeProxy');
 const apiKeyFields = document.getElementById('apiKeyFields');
@@ -17,6 +19,7 @@ const proxyFields = document.getElementById('proxyFields');
 const providerChainEl = document.getElementById('providerChain');
 const uiLangEsBtn = document.getElementById('uiLangEs');
 const uiLangEnBtn = document.getElementById('uiLangEn');
+const proxyStatusLine = document.getElementById('proxyStatusLine');
 
 let mode = 'apikey';
 let aiProvider = 'groq';
@@ -41,7 +44,6 @@ let providerOrder = [];
 function applyI18n() {
   document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
   document.querySelectorAll('[data-i18n-ph]').forEach(el => { el.placeholder = t(el.dataset.i18nPh); });
-  document.title = 'NewsPal — ' + t('p_settings_heading');
   uiLangEsBtn.classList.toggle('active', getUiLang() === 'es');
   uiLangEnBtn.classList.toggle('active', getUiLang() === 'en');
 }
@@ -73,9 +75,6 @@ function switchUiLang(lang) {
 
 uiLangEsBtn.addEventListener('click', () => switchUiLang('es'));
 uiLangEnBtn.addEventListener('click', () => switchUiLang('en'));
-
-const optionsVersionEl = document.getElementById('optionsVersion');
-if (optionsVersionEl) versionLabel().then(label => { optionsVersionEl.textContent = label; });
 
 // ── Provider fallback chain (reorderable queue) ───────────────────────────────
 
@@ -199,7 +198,7 @@ understoodEl.addEventListener('change', () => {
 });
 
 // Learned rules: one per line; the background picks up edits via storage.onChanged.
-feedbackRulesEl.addEventListener('change', () => {
+feedbackRulesEl.addEventListener('input', () => {
   const rules = feedbackRulesEl.value.split('\n').map(s => s.trim()).filter(Boolean).slice(0, 12);
   browser.storage.local.set({ feedbackRules: rules });
 });
@@ -228,12 +227,12 @@ modeProxyBtn.addEventListener('click', () => switchMode('proxy'));
 
 // ── Save keys on change ───────────────────────────────────────────────────────
 
+// Saved on every keystroke, not only on 'change': the popup closes the moment you click
+// outside it, and a half-typed value would otherwise be lost with it.
 [anthropicEl, proxyUrlEl, proxyTokenEl, gladiaEl].forEach(el => {
-  el.addEventListener('input', () => { el.classList.remove('saved'); updateHint(); });
-  el.addEventListener('change', () => {
-    const key = el.id;
-    browser.storage.local.set({ [key]: el.value.trim() });
-    el.classList.add('saved');
+  el.addEventListener('input', () => {
+    browser.storage.local.set({ [el.id]: el.value.trim() });
+    el.classList.toggle('saved', !!el.value.trim());
     updateHint();
   });
 });
@@ -257,10 +256,37 @@ function updateHint() {
   }
 }
 
+// ── Proxy status (checked by the background; see refreshProxyStatus) ────────
+
+let proxyStatus = { state: 'off' };
+
+function renderProxyStatus() {
+  const s = proxyStatus.state;
+  proxyStatusLine.textContent = s === 'checking' ? t('p_checking_proxy')
+    : s === 'ok' ? t('p_proxy_ok')
+    : s === 'bad' ? proxyProblemText(proxyStatus)
+    : '';
+  proxyStatusLine.className = 'key-hint' + (s === 'ok' ? ' ok' : s === 'bad' ? ' error' : '');
+}
+
+browser.storage.local.get('proxyStatus').then(d => {
+  if (d.proxyStatus) proxyStatus = d.proxyStatus;
+  renderProxyStatus();
+});
+
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local') return;
+  if (changes.proxyStatus) {
+    proxyStatus = changes.proxyStatus.newValue || { state: 'off' };
+    renderProxyStatus();
+  }
+  if (changes.uiLanguage) renderProxyStatus();
+});
+
 // ── Backup ────────────────────────────────────────────────────────────────────
 // Export/import live in their own window (backup.html): Firefox closes the browser-action
-// popup the moment a file picker opens, which killed the import mid-flight. This page is
-// a real tab and wouldn't have that problem, but the window is already built and shared.
+// popup the moment a file picker opens, which killed the import mid-flight. Settings are
+// part of the popup too, so the backup still needs that separate window.
 
 document.getElementById('openBackupBtn').addEventListener('click', () => {
   browser.windows.create({
@@ -270,3 +296,4 @@ document.getElementById('openBackupBtn').addEventListener('click', () => {
     height: 400,
   });
 });
+})();

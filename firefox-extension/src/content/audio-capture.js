@@ -265,6 +265,19 @@ function gladiaInitIsFatal(status) {
   return status === 400 || status === 401 || status === 422;
 }
 
+// Name the actual cause while retrying: only a 429 means Gladia still holds the previous
+// session; a request that never got an answer (status 0) is a wrong or unreachable
+// address — typically a mistyped proxy URL — not Gladia.
+function gladiaRetryMessage(status, n, total) {
+  if (status === 429) return fmt(t('ac_gladia_retrying'), { n, total });
+  if (!status) {
+    const target = gladiaKey ? 'Gladia' : t('ac_the_proxy');
+    return fmt(t('ac_gladia_unreachable_retrying'), { target, n, total });
+  }
+  const via = gladiaKey ? '' : t('ac_via_proxy');
+  return fmt(t('ac_gladia_status_retrying'), { via, status, n, total });
+}
+
 async function requestGladiaSession() {
   // Direct (key in browser) or via proxy (key on server). Proxy forwards to Gladia.
   const initUrl = gladiaKey ? 'https://api.gladia.io/v2/live' : gladiaProxyUrl;
@@ -319,16 +332,19 @@ async function connectGladia() {
       if (delay === undefined) break; // attempts exhausted
       browser.runtime.sendMessage({
         type: 'PIPELINE_INFO',
-        message: fmt(t('ac_gladia_retrying'), { n: attempt + 1, total: GLADIA_INIT_RETRY_DELAYS.length + 1 }),
+        message: gladiaRetryMessage(lastStatus, attempt + 1, GLADIA_INIT_RETRY_DELAYS.length + 1),
       });
       await new Promise(r => setTimeout(r, delay));
     }
 
     if (!initRes) {
       const via = gladiaKey ? '' : t('ac_via_proxy');
+      const reason = lastStatus
+        ? fmt(t('ac_gladia_failed_status'), { via, status: lastStatus })
+        : fmt(t('ac_gladia_unreachable'), { target: gladiaKey ? 'Gladia' : t('ac_the_proxy') });
       browser.runtime.sendMessage({
         type: 'PIPELINE_ERROR',
-        message: fmt(t('ac_gladia_failed_status'), { via, status: lastStatus || '—' }) + (detail ? ' ' + detail : ''),
+        message: reason + (detail ? ' ' + detail : ''),
       });
       stopAudioCapture();
       return;

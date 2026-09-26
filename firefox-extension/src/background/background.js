@@ -60,6 +60,7 @@ async function loadKeys() {
 // same values is harmless.
 browser.storage.onChanged.addListener(async (changes, area) => {
   if (area !== 'local') return;
+  if (changes.proxyUrl || changes.connectionMode) scheduleProxyCheck();
   if (changes.feedbackRules) {
     LEARNED_RULES = Array.isArray(changes.feedbackRules.newValue) ? changes.feedbackRules.newValue : [];
   }
@@ -1172,6 +1173,10 @@ browser.runtime.onMessage.addListener((msg, sender) => {
     case 'GET_STATUS':
       return Promise.resolve({ isCapturing });
 
+    case 'CHECK_PROXY':
+      refreshProxyStatus({ quiet: true });
+      return Promise.resolve({ ok: true });
+
     // Content scripts have no access to browser.management, so the panel footer asks
     // us for its version label (see versionLabel() in lang.js).
     case 'GET_VERSION_LABEL':
@@ -1181,6 +1186,58 @@ browser.runtime.onMessage.addListener((msg, sender) => {
 
 // ── Start / stop ──────────────────────────────────────────────────────────────
 
+// ── Proxy health ─────────────────────────────────────────────────────────────
+// Asks the proxy's open /health endpoint whether it is there. Returns null when it is, or
+// { reason, status } when it isn't (a reason code, so the popup words it in whatever UI
+// language is current). The token isn't checked: /health is deliberately outside the
+// token gate, and a wrong token already fails with a clear 401.
+async function checkProxy(proxyUrl) {
+  let healthUrl;
+  try { healthUrl = new URL('/health', proxyUrl).href; }
+  catch { return { reason: 'bad_url' }; }
+  try {
+    const res = await fetch(healthUrl, { signal: AbortSignal.timeout(8000) });
+    const data = res.ok ? await res.json().catch(() => null) : null;
+    if (data && data.status === 'ok') return null;
+    return { reason: 'not_ours', status: res.status };
+  } catch (err) {
+    console.warn('[proxy] health check failed:', err.message);
+    return { reason: 'unreachable' };
+  }
+}
+
+// The result lives in storage as `proxyStatus` ({ state: 'off' | 'checking' | 'ok' | 'bad',
+// reason?, status? }) so the popup can show it — and block Start — without a click.
+// Checked when the browser starts, when the proxy URL or the mode changes, and whenever the
+// popup opens (quietly: the last result stays on screen until the new one arrives).
+let proxyCheckSeq = 0;
+let proxyCheckTimer = null;
+
+async function refreshProxyStatus({ quiet = false } = {}) {
+  const { proxyUrl, connectionMode } = await browser.storage.local.get(['proxyUrl', 'connectionMode']);
+  const url = (proxyUrl || '').trim();
+  const seq = ++proxyCheckSeq;
+  if (connectionMode !== 'proxy' || !url) {
+    await browser.storage.local.set({ proxyStatus: { state: 'off' } });
+    return null;
+  }
+  if (!quiet) await browser.storage.local.set({ proxyStatus: { state: 'checking' } });
+  const problem = await checkProxy(url);
+  // A newer check (the URL changed meanwhile) owns the result.
+  if (seq === proxyCheckSeq) {
+    await browser.storage.local.set({ proxyStatus: problem ? { state: 'bad', ...problem } : { state: 'ok' } });
+  }
+  return problem;
+}
+
+// The settings save on every keystroke, so wait until the typing stops.
+function scheduleProxyCheck() {
+  clearTimeout(proxyCheckTimer);
+  proxyCheckTimer = setTimeout(() => refreshProxyStatus(), 800);
+}
+
+refreshProxyStatus();
+
 async function startFactCheck() {
   if (isCapturing) return { ok: true };
 
@@ -1189,6 +1246,16 @@ async function startFactCheck() {
     throw new Error(getUiLang() === 'es'
       ? 'Configura una API key de Anthropic o una URL de proxy en el popup.'
       : 'Set an Anthropic API key or a proxy URL in the popup.');
+  }
+
+  // In proxy mode everything (AI and, without a direct key, Gladia) goes through the
+  // proxy, so a mistyped or dead URL would start a session that can do nothing but retry.
+  // Refuse to start instead, and say why.
+  // Re-checked here too: the proxy may have gone down since the popup last looked.
+  const { connectionMode } = await browser.storage.local.get('connectionMode');
+  if (connectionMode === 'proxy') {
+    const problem = await refreshProxyStatus({ quiet: true });
+    if (problem) return { ok: false, error: proxyProblemText(problem) };
   }
 
   const tabs = await browser.tabs.query({ active: true, currentWindow: true });
