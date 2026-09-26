@@ -1,4 +1,4 @@
-// audio-capture.js — Gladia (primary) + Whisper local (fallback)
+// audio-capture.js — Gladia (primary) + Whisper local (only when no Gladia is configured)
 // Firefox: uses getDisplayMedia for tab audio capture in both modes
 // Gladia: real-time via WebSocket, best quality + diarization
 // Whisper: local model via transformers.js, no API key needed, ~75MB download once
@@ -246,6 +246,7 @@ async function startAudioCapture(opts) {
   if (gladiaKey || gladiaProxyUrl) {
     transcriptionMode = 'gladia';
     utteranceBuffer = '';
+    gladiaSocketFailures = 0;
     if (resuming && previousGladiaUrl) await releasePreviousGladiaSession(previousGladiaUrl);
     connectGladia();
   } else {
@@ -266,6 +267,10 @@ async function startAudioCapture(opts) {
 // documents no timeout for an abrupt disconnect, so this is deliberately generous: a
 // press conference is worth waiting two minutes for).
 const GLADIA_INIT_RETRY_DELAYS = [2000, 5000, 10000, 20000, 30000, 45000];
+
+// Consecutive sessions whose socket never opened; reset by any successful open.
+const GLADIA_SOCKET_MAX_FAILURES = 4;
+let gladiaSocketFailures = 0;
 
 function gladiaInitIsFatal(status) {
   return status === 400 || status === 401 || status === 422;
@@ -418,8 +423,11 @@ async function connectGladia() {
     }
 
     socket = new WebSocket(wsUrl);
+    let socketOpened = false;
 
     socket.onopen = () => {
+      socketOpened = true;
+      gladiaSocketFailures = 0;
       console.log('[audio-capture] gladia connected');
       browser.runtime.sendMessage({ type: 'CAPTURE_READY' });
       browser.runtime.sendMessage({ type: 'PIPELINE_INFO', message: t('ac_connected') });
@@ -474,9 +482,12 @@ async function connectGladia() {
       }
     };
 
+    // An error is always followed by a close, and the close decides what to do. This
+    // used to switch to local Whisper, which a configured Gladia user never wants: its
+    // model comes from a CDN that pages like YouTube block with their CSP, so a single
+    // failed handshake (close 1006) ended the transcription outright.
     socket.onerror = () => {
-      browser.runtime.sendMessage({ type: 'PIPELINE_INFO', message: t('ac_fallback_whisper') });
-      fallbackToWhisper();
+      console.warn('[gladia] socket error');
     };
 
     socket.onclose = (e) => {
@@ -486,10 +497,18 @@ async function connectGladia() {
           browser.runtime.sendMessage({ type: 'PIPELINE_ERROR', message: fmt(t('ac_auth_failed'), { code: e.code }) });
           stopAudioCapture();
         } else {
+          // A socket that never opened would otherwise loop init → fail forever; each
+          // round asks Gladia for a new session, so give up after a few, with backoff.
+          if (!socketOpened) gladiaSocketFailures++;
+          if (gladiaSocketFailures >= GLADIA_SOCKET_MAX_FAILURES) {
+            browser.runtime.sendMessage({ type: 'PIPELINE_ERROR', message: fmt(t('ac_gladia_socket_failed'), { code: e.code }) });
+            stopAudioCapture();
+            return;
+          }
           browser.runtime.sendMessage({ type: 'PIPELINE_INFO', message: fmt(t('ac_reconnecting'), { code: e.code, reason: e.reason ? ': ' + e.reason : '' }) });
           setTimeout(() => {
             if (captureActive && transcriptionMode === 'gladia') connectGladia();
-          }, 2000);
+          }, 2000 * Math.max(1, gladiaSocketFailures));
         }
       }
     };
@@ -686,15 +705,7 @@ function releasePreviousGladiaSession(url) {
   });
 }
 
-// ── Whisper local (fallback) ─────────────────────────────────────────────────
-
-function fallbackToWhisper() {
-  transcriptionMode = 'whisper'; // set FIRST so the closing socket doesn't reconnect
-  endGladiaSession();
-  stopGladiaPipeline();
-  // Keep mediaStream — we reuse it for Whisper
-  startWithWhisper();
-}
+// ── Whisper local (only when no Gladia is configured) ────────────────────────
 
 async function startWithWhisper() {
   browser.runtime.sendMessage({
