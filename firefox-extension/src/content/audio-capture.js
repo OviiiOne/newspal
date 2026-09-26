@@ -20,6 +20,7 @@ let gladiaKey = '';
 let gladiaProxyUrl = ''; // set when Gladia should be started via the proxy (key server-side)
 let proxyToken = '';     // shared secret sent to the proxy
 let sourceLanguage = 'auto'; // 'auto' | ISO code (es, en, fr, ar, he, fa, ...)
+let understoodLanguages = []; // languages the user reads without a translation
 let transcriptionMode = 'none'; // 'gladia' | 'whisper'
 
 // Multilingual Whisper model (replaces English-only whisper-tiny.en).
@@ -136,11 +137,14 @@ async function startAudioCapture(opts) {
   const previousMode = (opts && opts.captureMode) || null;
   const previousGladiaUrl = (opts && opts.gladiaSessionUrl) || '';
 
-  const data = await browser.storage.local.get(['gladiaKey', 'sourceLanguage', 'proxyUrl', 'connectionMode', 'proxyToken', 'uiLanguage']);
+  const data = await browser.storage.local.get(['gladiaKey', 'sourceLanguage', 'proxyUrl', 'connectionMode', 'proxyToken', 'uiLanguage', 'understoodLanguages']);
   gladiaKey = data.gladiaKey || '';
   sourceLanguage = data.sourceLanguage || 'auto';
   proxyToken = data.proxyToken || '';
   setUiLang(data.uiLanguage || defaultUiLanguage());
+  understoodLanguages = (Array.isArray(data.understoodLanguages) && data.understoodLanguages.length)
+    ? data.understoodLanguages
+    : defaultUnderstoodLanguages();
 
   // In proxy mode without a direct key, start Gladia through the proxy so the
   // Gladia key stays on the server (Railway), never in the browser.
@@ -267,7 +271,20 @@ function gladiaInitIsFatal(status) {
   return status === 400 || status === 401 || status === 422;
 }
 
-async function requestGladiaSession() {
+// Gladia's own live translation is the primary translator: the unofficial Google endpoint
+// throttles every sustained foreign-language session with HTTP 429. It is only left out
+// when the source language is pinned to one the user understands — then nothing needs it.
+// 'base' (fast). 'enhanced' was tried on the same Mandarin briefing: no better, several
+// translations ~32 s late, and it still returned lines untranslated.
+const GLADIA_TRANSLATION_MODEL = 'base';
+
+function wantsGladiaTranslation() {
+  if (sourceLanguage === 'auto') return true;
+  const base = String(sourceLanguage).toLowerCase().split(/[-_]/)[0];
+  return !understoodLanguages.includes(base);
+}
+
+async function requestGladiaSession(translate) {
   // Direct (key in browser) or via proxy (key on server). Proxy forwards to Gladia.
   const initUrl = gladiaKey ? 'https://api.gladia.io/v2/live' : gladiaProxyUrl;
   const initHeaders = gladiaKey
@@ -275,40 +292,71 @@ async function requestGladiaSession() {
     : { 'Content-Type': 'application/json' };
   if (!gladiaKey && proxyToken) initHeaders['x-proxy-token'] = proxyToken;
 
+  const body = {
+    encoding: 'wav/pcm',
+    sample_rate: 16000,
+    channels: 1,
+    // 'auto' → empty list lets Gladia auto-detect (code_switching re-detects on each
+    // utterance, so a bilingual Q&A keeps working).
+    // Specific language → pin it for best accuracy.
+    language_config: sourceLanguage === 'auto'
+      ? { languages: [], code_switching: true }
+      : { languages: [sourceLanguage], code_switching: false },
+    // Whole sentences instead of fragments. Gladia's defaults (0.05 s of silence ends an
+    // utterance, 5 s maximum) cut a speaker mid-sentence, and each piece was translated on
+    // its own — one reversed the meaning. These are Gladia's recommended meeting values.
+    endpointing: 0.4,
+    maximum_duration_without_endpointing: 15,
+    realtime_processing: {
+      words_accurate_timestamps: true,
+    },
+  };
+  // translation_config belongs INSIDE realtime_processing; at the top level Gladia answers 400.
+  if (translate) {
+    body.realtime_processing.translation = true;
+    body.realtime_processing.translation_config = {
+      target_languages: [getUiLang()],
+      model: GLADIA_TRANSLATION_MODEL,
+      // Our time-based matching relies on translations keeping the original utterances.
+      match_original_utterances: true,
+      // Lip-sync alignment is for dubbing; we suspect it of the ~32 s delay seen on short
+      // sentences (the AI's provisional version showed meanwhile).
+      lipsync: false,
+    };
+  }
+
   return fetch(initUrl, {
     method: 'POST',
     headers: initHeaders,
-    body: JSON.stringify({
-      encoding: 'wav/pcm',
-      sample_rate: 16000,
-      channels: 1,
-      // 'auto' → empty list lets Gladia auto-detect (code_switching re-detects on each
-      // utterance, so a bilingual Q&A keeps working).
-      // Specific language → pin it for best accuracy.
-      language_config: sourceLanguage === 'auto'
-        ? { languages: [], code_switching: true }
-        : { languages: [sourceLanguage], code_switching: false },
-      realtime_processing: {
-        words_accurate_timestamps: true,
-      },
-    }),
+    body: JSON.stringify(body),
   });
 }
+
+// Message types seen on this socket, logged once each: evidence of what Gladia really
+// sends (e.g. an error type if the plan refuses translation) while this is on trial.
+const seenGladiaMessageTypes = new Set();
 
 async function connectGladia() {
   try {
     let initRes = null;
     let detail = '';
     let lastStatus = 0;
+    const translate = wantsGladiaTranslation();
 
     for (let attempt = 0; attempt <= GLADIA_INIT_RETRY_DELAYS.length; attempt++) {
       if (!captureActive) return; // stopped while we were waiting
       detail = '';
       try {
-        const res = await requestGladiaSession();
+        const res = await requestGladiaSession(translate);
         if (res.ok) { initRes = res; break; }
         lastStatus = res.status;
-        try { const e = await res.json(); detail = (e && e.error && e.error.message) || ''; } catch {}
+        // Our proxy's own errors are { error: { message } }; Gladia's are { message,
+        // validation_errors } and the proxy passes them through untouched.
+        try {
+          const e = await res.json();
+          const validation = Array.isArray(e && e.validation_errors) ? e.validation_errors.join('; ') : '';
+          detail = (e && e.error && e.error.message) || [e && e.message, validation].filter(Boolean).join(' — ') || '';
+        } catch {}
         console.error('[gladia] init failed:', res.status, detail, 'attempt', attempt + 1);
         if (gladiaInitIsFatal(res.status)) break;
       } catch (err) {
@@ -339,7 +387,13 @@ async function connectGladia() {
     const initData = await initRes.json();
     const wsUrl = initData.url;
     // The background outlives a page reload, so it keeps this for the resume below.
-    if (wsUrl) browser.runtime.sendMessage({ type: 'GLADIA_SESSION', url: wsUrl });
+    // `translation` tells it whether to wait for Gladia's translations before the fallbacks.
+    if (wsUrl) {
+      browser.runtime.sendMessage({
+        type: 'GLADIA_SESSION', url: wsUrl, translation: translate,
+        translationModel: translate ? GLADIA_TRANSLATION_MODEL : null,
+      });
+    }
 
     if (!wsUrl) {
       browser.runtime.sendMessage({ type: 'PIPELINE_ERROR', message: t('ac_no_session_url') });
@@ -359,6 +413,10 @@ async function connectGladia() {
     socket.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
+        if (msg.type && !seenGladiaMessageTypes.has(msg.type)) {
+          seenGladiaMessageTypes.add(msg.type);
+          console.log('[gladia] message type:', msg.type, msg.type === 'translation' || msg.error ? msg : '');
+        }
 
         if (msg.type === 'transcript') {
           const text = msg.data?.utterance?.text?.trim();
@@ -376,6 +434,23 @@ async function connectGladia() {
             // Gladia detects the language of every utterance (BCP-47, e.g. "en"). It is
             // what decides whether a line needs translating — see needsTranslation().
             language: msg.data?.utterance?.language || null,
+            // What Gladia's translation of this utterance will be matched against.
+            utteranceId: msg.data?.id ?? null,
+            start: msg.data?.utterance?.start ?? null,
+            end: msg.data?.utterance?.end ?? null,
+          });
+        } else if (msg.type === 'translation') {
+          const d = msg.data || {};
+          const text = d.translated_utterance?.text?.trim();
+          if (!text) return;
+          browser.runtime.sendMessage({
+            type: 'GLADIA_TRANSLATION',
+            utteranceId: d.utterance_id ?? null,
+            start: d.utterance?.start ?? null,
+            end: d.utterance?.end ?? null,
+            original: d.utterance?.text?.trim() || '',
+            text,
+            targetLanguage: d.target_language || '',
           });
         }
       } catch (err) {

@@ -213,6 +213,14 @@ function sendSpeakerMap() {
   browser.runtime.sendMessage({ type: 'SPEAKER_NAMES', speakerIdToName });
 }
 
+// Typing inside the panel must not reach the page. The player's own keyboard shortcuts
+// listen on the document, so Enter or a space typed in one of our fields paused the
+// press conference. Our own listeners on the field still run: this only stops the event
+// on its way out of the panel.
+function keepKeysInPanel(el) {
+  ['keydown', 'keyup', 'keypress'].forEach(type => el.addEventListener(type, e => e.stopPropagation()));
+}
+
 function renderSpeakerEditor() {
   const el = panel?.querySelector('#rtfc-speaker-editor');
   if (!el || !speakers.length) return;
@@ -225,6 +233,7 @@ function renderSpeakerEditor() {
   }).join('');
 
   el.querySelectorAll('.rtfc-speaker-chip-input').forEach(input => {
+    keepKeysInPanel(input);
     input.addEventListener('change', (e) => {
       const idx = parseInt(e.target.dataset.idx);
       const oldName = speakers[idx];
@@ -534,6 +543,7 @@ function setLineTranslation(line, text, translation, source) {
     line.appendChild(tr);
   }
   tr.className = 'rtfc-tr' + (source === 'ai' ? ' rtfc-tr-ai' : '');
+  tr.title = translationEngineTitle(source);
   tr.textContent = '↳ ';
   if (source === 'ai') {
     const badge = document.createElement('span');
@@ -543,6 +553,15 @@ function setLineTranslation(line, text, translation, source) {
     tr.appendChild(badge);
   }
   tr.appendChild(document.createTextNode(translation));
+}
+
+// Which engine produced a translation, shown on hover ('gladia' | 'google' | 'ai').
+// Lines restored from an older backup have no source recorded: no title then.
+function translationEngineTitle(source) {
+  if (source === 'gladia') return t('ov_tr_by_gladia');
+  if (source === 'google') return t('ov_tr_by_google');
+  if (source === 'ai') return t('ov_ai_badge_title');
+  return '';
 }
 
 // A translation arriving after its line is already on screen.
@@ -863,8 +882,10 @@ function buildKeyPointCard(kp) {
     ? '<p class="rtfc-kp-quote">“' + escapeHtml(kp.quote) + '”</p>'
     : '';
 
+  // The exact model is on hover: the card has no room, but it answers "which Mistral?".
   const modelTag = kp.model
-    ? '<span class="rtfc-kp-model">' + escapeHtml(t('ov_via') + ' ' + ((typeof providerLabel === 'function') ? providerLabel(kp.model) : kp.model)) + '</span>'
+    ? '<span class="rtfc-kp-model"' + (kp.modelId ? ' title="' + escapeHtml(kp.modelId) + '"' : '') + '>' +
+      escapeHtml(t('ov_via') + ' ' + ((typeof providerLabel === 'function') ? providerLabel(kp.model) : kp.model)) + '</span>'
     : '';
 
   card.innerHTML = [
@@ -942,6 +963,7 @@ function buildKeyPointCard(kp) {
     pointEl.style.display = 'none';
     if (actions) actions.style.display = 'none';
     pointEl.insertAdjacentElement('afterend', editor);
+    keepKeysInPanel(ta);
     ta.focus();
 
     const close = () => {
@@ -1002,6 +1024,7 @@ function editKeyPointSpeaker(card, kp) {
 
   tag.style.display = 'none';
   tag.insertAdjacentElement('afterend', editor);
+  keepKeysInPanel(input);
   input.focus();
   input.select();
 
@@ -1091,7 +1114,7 @@ function renderRestoredSession(data) {
     }
   });
 
-  if (data.summary) renderSummary(data.summary);
+  if (data.summary) renderSummary(data.summary, '', '');
 }
 
 function applyKeyPointVerdict(id, result) {
@@ -1153,7 +1176,7 @@ function generateSummary() {
   browser.runtime.sendMessage({ type: 'SUMMARIZE', input });
 }
 
-function renderSummary(text) {
+function renderSummary(text, provider, modelId) {
   if (!summaryEl) return;
   summaryEl.style.display = '';
   const title = '<div class="rtfc-summary-title">' + escapeHtml(t('ov_summary_title')) + '</div>';
@@ -1166,7 +1189,7 @@ function renderSummary(text) {
   body.className = 'rtfc-summary-body';
   body.textContent = text;
   summaryEl.appendChild(body);
-  if (typeof setSummary === 'function') setSummary(text);
+  if (typeof setSummary === 'function') setSummary(text, provider, modelId);
 }
 
 // Participants bar: shows current participants and lets the user add more live
@@ -1190,9 +1213,13 @@ function renderParticipantsBar() {
   });
 
   const input = el.querySelector('.rtfc-part-input');
-  input.addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter') return;
-    e.preventDefault();
+  keepKeysInPanel(input);
+  // Saved on Enter AND on leaving the field: pressing Enter over a video pauses it, so
+  // clicking away has to be enough. Re-rendering the bar replaces this input, hence the
+  // guard — the blur that the re-render itself causes must not run the commit twice.
+  let committed = false;
+  const commitNames = () => {
+    if (committed) return;
     const names = input.value.split(',').map(s => s.trim()).filter(Boolean);
     input.value = '';
     let added = false;
@@ -1203,8 +1230,14 @@ function renderParticipantsBar() {
         added = true;
       }
     }
-    if (added) renderParticipantsBar();
+    if (added) { committed = true; renderParticipantsBar(); }
+  };
+  input.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    commitNames();
   });
+  input.addEventListener('blur', commitNames);
 
   el.querySelectorAll('.rtfc-part-del').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1563,6 +1596,22 @@ browser.runtime.onMessage.addListener((msg) => {
       break;
     }
 
+    // The same statement came back with more context (often completing a ⭐ fragment).
+    // One card: its text is replaced, and the ✏️ is there if it went too far.
+    case 'EXPAND_KEYPOINT': {
+      for (const card of kpCards.values()) {
+        if (!card._kpData || card._kpData.point !== msg.previous) continue;
+        const pointEl = card.querySelector('.rtfc-kp-point');
+        if (!pointEl || card.querySelector('.rtfc-kp-edit')) break; // he is editing it right now
+        card._kpData.point = msg.point;
+        pointEl.textContent = msg.point;
+        pointEl.title = t('ov_kp_expanded_title');
+        if (typeof updateKeyPointText === 'function') updateKeyPointText(card._kpData._id, msg.point);
+        break;
+      }
+      break;
+    }
+
     case 'NEW_KEYPOINTS':
       if (msg.results) {
         for (const kp of msg.results) addKeyPoint(kp);
@@ -1578,7 +1627,7 @@ browser.runtime.onMessage.addListener((msg) => {
       break;
 
     case 'SUMMARY_RESULT':
-      renderSummary(msg.text || '');
+      renderSummary(msg.text || '', msg.provider || '', msg.modelId || '');
       // The user asked to close WITH a summary: it's in the log now, so export and go.
       if (closeAfterSummary) finishCloseWithSummary();
       break;

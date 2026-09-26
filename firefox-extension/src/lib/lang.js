@@ -270,6 +270,11 @@ const I18N = {
     ov_via: 'vía',
     ov_ai_badge: 'IA',
     ov_ai_badge_title: 'Traducción hecha por IA: puede contener errores',
+    ov_tr_by_gladia: 'Traducido por Gladia',
+    ov_tr_by_google: 'Traducido por Google',
+    bg_tr_gladia_on: 'Traductor: Gladia (modelo {model}), con Google e IA de reserva',
+    bg_tr_gladia_silent: 'Traductor: Gladia no envía traducciones — traducen Google y la IA',
+    ex_tr_counts: 'Traducciones: Gladia {gladia} · Google {google} · IA {ai}',
     ac_no_sound: 'No llega sonido del vídeo a la extensión ({s} s de silencio total). Si el vídeo sí suena, Firefox está bloqueando su audio —pasa con vídeos servidos desde otro servidor— y no se va a transcribir.',
     ov_no_sound_marker: 'Sin sonido del vídeo',
     bg_gt_paused: 'Traductor: Google no responde ({reason}) — traduce la IA',
@@ -298,6 +303,7 @@ const I18N = {
     ov_kp_speaker_unset: '+ ¿quién?',
     ov_kp_speaker_edit_title: 'Cambiar el hablante (se añadirá a participantes)',
     ov_kp_speaker_set_title: 'Poner nombre al hablante (se añadirá a participantes)',
+    ov_kp_expanded_title: 'Ampliado con lo que se dijo después — el lápiz lo recorta',
     ov_kp_speaker_ph: 'Nombre del hablante',
     // LLM chain
     bg_llm_all_failed: 'Ningún modelo de IA ha respondido, así que no habrá puntos clave ni resumen. Detalle — {detail}',
@@ -339,8 +345,10 @@ const I18N = {
     ex_verified: 'Verificados',
     ex_source: 'Fuente',
     ex_title_label: 'Título:',
+    ex_when_label: 'Fecha y hora del acto (está ocurriendo ahora):',
     ex_kp_label: 'Puntos clave:',
     ex_tr_label: 'Transcripción:',
+    ex_mt_label: 'Traducción automática de Gladia (solo como apoyo, puede contener errores):',
   },
   en: {
     // Popup
@@ -429,6 +437,11 @@ const I18N = {
     ov_via: 'via',
     ov_ai_badge: 'AI',
     ov_ai_badge_title: 'Translated by AI: may contain errors',
+    ov_tr_by_gladia: 'Translated by Gladia',
+    ov_tr_by_google: 'Translated by Google',
+    bg_tr_gladia_on: 'Translator: Gladia ({model} model), with Google and AI as backup',
+    bg_tr_gladia_silent: 'Translator: Gladia is sending no translations — Google and AI are translating',
+    ex_tr_counts: 'Translations: Gladia {gladia} · Google {google} · AI {ai}',
     ac_no_sound: 'No sound from the video is reaching the extension ({s} s of total silence). If the video does play sound, Firefox is blocking its audio —it happens with videos served from another server— and it will not be transcribed.',
     ov_no_sound_marker: 'No sound from the video',
     bg_gt_paused: 'Translator: Google not responding ({reason}) — AI is translating',
@@ -457,6 +470,7 @@ const I18N = {
     ov_kp_speaker_unset: '+ who?',
     ov_kp_speaker_edit_title: 'Change the speaker (added to participants)',
     ov_kp_speaker_set_title: 'Name the speaker (added to participants)',
+    ov_kp_expanded_title: 'Expanded with what was said afterwards — the pencil trims it',
     ov_kp_speaker_ph: 'Speaker name',
     // LLM chain
     bg_llm_all_failed: 'No AI model answered, so there will be no key points or summary. Detail — {detail}',
@@ -498,8 +512,10 @@ const I18N = {
     ex_verified: 'Verified',
     ex_source: 'Source',
     ex_title_label: 'Title:',
+    ex_when_label: 'Event date and time (it is happening now):',
     ex_kp_label: 'Key points:',
     ex_tr_label: 'Transcript:',
+    ex_mt_label: 'Gladia machine translation (reading aid only, may contain errors):',
   },
 };
 

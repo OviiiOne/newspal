@@ -175,7 +175,9 @@ Do NOT judge whether anything is true — just capture what was said, neutrally.
 
 CRITICAL — NO FABRICATION: Use ONLY the transcript excerpt provided in this request. Do NOT use any prior knowledge about the speaker or the event, and do NOT reproduce anything from the examples or the "already noted" list as if it were said now. The "quote" MUST be copied WORD FOR WORD from THIS excerpt. If a noteworthy statement is not literally present in this excerpt, return {"points": []}. Never invent, complete or recall a statement from memory.
 
-MIND THE TEMPORAL CONTEXT: speakers often QUOTE HISTORY or recall past events (old wars, former possessions, past decisions). NEVER present a historical reference or rhetorical retelling as a current announcement, plan, position or threat. If a noteworthy point is historical, make that explicit in the wording (e.g. "recalls that…"); if you cannot tell whether it is current or historical, SKIP it rather than guess.
+MIND THE TEMPORAL CONTEXT: speakers often QUOTE HISTORY or recall past events (old wars, former possessions, past decisions). NEVER present a historical reference or rhetorical retelling as a current announcement, plan, position or threat. If a noteworthy point is historical, make that explicit in the wording (e.g. "recalls that…"); if you cannot tell whether it is current or historical, SKIP it rather than guess. KEEP THE SPEAKER'S OWN TENSE: something they describe as already done stays done — never turn it into a plan or an upcoming event. The request gives you the date this is being said; use it, never your own sense of when "now" is.
+
+INTERPRETED EVENTS: many of these events have consecutive interpretation, so the SAME statement arrives twice — first in the speaker's own language, then interpreted into another one. Extract it ONCE, from the speaker's own words. If this excerpt is the interpreted repetition of something in the "already noted" list, even though it is in a different language, return {"points": []}.
 
 Return ONLY a JSON object of the form {"points": [ ... ]} (no markdown, no text outside the JSON). Each element of "points" has:
 - "point": a concise, neutral one-sentence summary, written in ${L.name.toUpperCase()}
@@ -188,7 +190,17 @@ If nothing is noteworthy, return {"points": []}.`;
 
 // What a translation must carry over untouched. A small model "localises" otherwise: it
 // swapped a politician's name for another, and turned "en français" into "in Spanish".
-const TRANSLATE_KEEP = 'Keep every name, number, title, language, country and place exactly as the text says — translate the words, never replace one of these with a different one.';
+const TRANSLATE_KEEP = 'Plain text only: no Markdown (no ** or #) and no original-script words added in parentheses. Keep every name, number, title, language, country and place as the text says — a name written in a non-Latin script goes in its usual Latin-script form — translate the words, never replace one of these with a different one.';
+
+// Small models format anyway (a Mandarin session got **bold** names in the AI translations
+// and *italics* in the summary), so the output is cleaned in code, not just asked for.
+function stripMarkdown(text) {
+  return String(text || '')
+    .replace(/\*\*(.+?)\*\*/gs, '$1')
+    .replace(/__(.+?)__/gs, '$1')
+    .replace(/(^|[\s(])\*(\S(?:.*?\S)?)\*(?=[\s).,;:!?]|$)/gm, '$1$2')
+    .replace(/^#{1,6}\s+/gm, '');
+}
 
 function translatePrompt(sourceCode) {
   const L = promptLang();
@@ -220,15 +232,25 @@ No text outside the JSON object.`;
 
 function summaryPrompt() {
   const L = promptLang();
-  return `You are summarizing a live press conference for a professional who reads ${L.name}. The user gives you the key points (and maybe a transcript). Write a TRUE NARRATIVE SUMMARY in ${L.name.toUpperCase()}, in PLAIN TEXT (no Markdown symbols like # or *).
+  return `You are summarizing a live press conference for a professional who reads ${L.name}. The user gives you the key points (if any) and usually the transcript of what was said, in its original language. Write a TRUE NARRATIVE SUMMARY in ${L.name.toUpperCase()}, in PLAIN TEXT (no Markdown symbols like # or *).
 
-CRITICAL: the key points are ALREADY listed separately in the report, so do NOT repeat them. This must be a SYNTHESIS in flowing prose — NOT a list. Absolutely NO bullet points, NO "• ", NO enumerating the points one by one. Instead, weave them into 2–4 connected paragraphs that explain what the event was about, who said what, the main lines of argument, the most significant decisions/figures/positions, and the overall takeaway. Group related points, drop repetition, and connect ideas with prose.
+CRITICAL: the key points are ALREADY listed separately in the report, so do NOT repeat them. This must be a SYNTHESIS in flowing prose — NOT a list. Absolutely NO bullet points, NO "• ", NO enumerating the points one by one. Instead, weave what was said into connected paragraphs that explain what the event was about, who said what, the main lines of argument, the most significant decisions/figures/positions, and the overall takeaway. Group related points, drop repetition, and connect ideas with prose.
 
-Think of it as the opening paragraphs a journalist writes ABOVE the bullet list of facts: it should add understanding and context, not duplicate the list.
+COVER THE WHOLE EVENT: the key points may cover only part of it — use the transcript to include every topic that was discussed, not just the ones with a key point.
+
+LENGTH FOLLOWS THE INPUT: one short paragraph for a short or thin input, up to four for a long event. Never pad: do NOT add background, history, motives or analysis that is not in the input — if little was said, write little.
+
+The transcript comes from automatic speech recognition and may contain misheard words or a phrase that doesn't belong. If a word makes no sense in context, leave it out rather than build on it or guess what was meant.
+
+You may also get a MACHINE TRANSLATION of the transcript. It is only a reading aid and can be wrong. Use it to understand the original and to read a name that speech recognition garbled. DATES, NUMBERS and FIGURES come only from the original transcript: never take a month, year or figure that appears only in the translation. When the two disagree on anything else, prefer the original.
+
+Think of it as the opening paragraphs a journalist writes ABOVE the bullet list of facts: it should add understanding by connecting what was said, not duplicate the list.
 
 ONLY if the input explicitly marks points as "[${L.verifiedMarker}: ...]", you may add at the end a short "${L.verifHeading}" paragraph mentioning those verdicts in prose. NEVER invent or imply a fact-check, and never state that anything has been "confirmed"/"verified" unless it is marked as such in the input.
 
-Mind the temporal context: if a point is a historical reference or a retelling of past events, present it as such — NEVER turn history into current events, plans or threats, and never infer intentions beyond what was literally said.
+Mind the temporal context: if a point is a historical reference or a retelling of past events, present it as such — NEVER turn history into current events, plans or threats, and never infer intentions beyond what was literally said. The input gives the date and time the event is taking place: it is happening NOW, so keep every statement in the tense the transcript uses — what a speaker describes as already done must not become something still to come.
+
+Roles: never add a status qualifier of your own (former, ex-, outgoing, interim, acting, -elect). Use the plain title unless the input itself says otherwise — your knowledge of who currently holds an office may simply be out of date.
 
 Be concise and neutral. Report only what was said; do not assess truth yourself. You may give a person the role or title you know them by, even if it may be out of date, but never make one up when you don't actually know it. People's NAMES, however, come only from the input: use them as they appear there, and never add a person who isn't in it or put a different person in their place — the same goes for which country someone represents. Return only the summary text.`;
 }
@@ -249,7 +271,7 @@ Return ONLY a JSON object of the form {"rules": ["...", "..."]} — no markdown,
 
 function manualKeypointPrompt() {
   const L = promptLang();
-  return `The user manually marked this transcript fragment as important. Turn it into EXACTLY ONE key point. You may be given PRECEDING TRANSCRIPT and a list of participants: use them ONLY to tell who is speaking and to understand what the fragment refers to — summarize ONLY the marked fragment, NEVER the context. The summary must cover the WHOLE fragment from its first sentence to its last — do not drop the beginning or keep only the ending; if it spans several ideas, connect them in one sentence. Return ONLY a JSON object: {"point": "<concise neutral one-sentence summary in ${L.name.toUpperCase()} covering the entire fragment>", "category": "<one of ${L.cats}, or a short ${L.name} label>", "quote": "<the FULL fragment in its original language>", "speaker": "<who said the fragment: follow the Participants rule given in the user message — use the EXACT participant name, or ${L.otherSpeaker} for anyone not listed, or null if truly impossible to tell>"}. No text outside the JSON.`;
+  return `The user manually marked this transcript fragment as important. Turn it into EXACTLY ONE key point. You may be given PRECEDING TRANSCRIPT and a list of participants: use them ONLY to tell who is speaking and to understand what the fragment refers to — summarize ONLY the marked fragment, NEVER the context. If the fragment is ONE statement, summarize it whole, from its first sentence to its last — do not drop the beginning or keep only the ending. If it contains SEVERAL distinct statements (the user selected a long passage), summarize the most newsworthy one instead of blending them all together. Return ONLY a JSON object: {"point": "<concise neutral one-sentence summary in ${L.name.toUpperCase()} covering the entire fragment>", "category": "<one of ${L.cats}, or a short ${L.name} label>", "quote": "<the FULL fragment in its original language>", "speaker": "<who said the fragment: follow the Participants rule given in the user message — use the EXACT participant name, or ${L.otherSpeaker} for anyone not listed, or null if truly impossible to tell>"}. No text outside the JSON.`;
 }
 
 // ── Speaker parsing ──────────────────────────────────────────────────────────
@@ -342,7 +364,13 @@ function noteChainFailure() {
 function parseLLMResponse(data) {
   const raw = data?.content?.[0]?.text?.trim() || '';
   const text = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
-  return { text, sources: Array.isArray(data?.sources) ? data.sources : [] };
+  // The proxy reports which model of the provider actually answered. "vía Mistral" alone
+  // hid whether a call went to mistral-large or fell through to a smaller model.
+  return {
+    text,
+    sources: Array.isArray(data?.sources) ? data.sources : [],
+    model: typeof data?.model === 'string' ? data.model : '',
+  };
 }
 
 async function callClaude(userMessage, systemPrompt, grounded = false, maxTokens = 768, json = false, silent = false) {
@@ -428,6 +456,7 @@ async function callClaude(userMessage, systemPrompt, grounded = false, maxTokens
       }
       setActiveProvider(provider);
       noteChainSuccess();
+      console.log(`[claude] ${provider} answered with model ${parsed.model || '?'}`);
       return parsed;
     } catch (err) {
       failures.push({ provider, err: err.message });
@@ -522,7 +551,17 @@ function normalizeClaimKey(claim) {
     .join(' ');
 }
 
-function isDuplicate(claim) {
+// Register a claim as seen without judging it. A ⭐ point is the user's own decision and is
+// always kept, but it was never recorded, so the automatic extraction re-found the same
+// statement a window later (with more context) and showed it twice.
+function rememberClaim(claim) {
+  if (claim && claim.trim()) recentClaims.set(normalizeClaimKey(claim), [Date.now(), claim]);
+}
+
+// The claim already on screen that `claim` repeats, or '' when it is new. Pure: nothing is
+// recorded here, so the caller decides what to keep (a repeat can EXPAND the card it
+// repeats instead of being dropped) and only that survivor is remembered.
+function duplicateOf(claim) {
   const key = normalizeClaimKey(claim);
   const now = Date.now();
 
@@ -531,27 +570,39 @@ function isDuplicate(claim) {
     if (now - t > CLAIM_DEDUP_MS) recentClaims.delete(k);
   }
 
-  if (recentClaims.has(key)) return true;
+  const storedClaim = k => { const v = recentClaims.get(k); return (Array.isArray(v) ? v[1] : '') || ''; };
+  if (recentClaims.has(key)) return storedClaim(key) || claim;
 
   const keyWords = new Set(key.split(' ').filter(Boolean));
   const figures = (claim.match(/\$[\d,.]+(?:\s*(?:trillion|billion|million|thousand))?/gi) || [])
     .map(d => d.replace(/[,\s]/g, '').toLowerCase());
 
   for (const [k, v] of recentClaims) {
+    const origClaim = (Array.isArray(v) ? v[1] : '') || '';
     const kWords = k.split(' ').filter(Boolean);
-    if (kWords.filter(w => keyWords.has(w)).length / Math.max(keyWords.size, kWords.length) >= 0.35) return true;
-    if (figures.length) {
-      const origClaim = Array.isArray(v) ? v[1] : '';
-      if (origClaim) {
-        const origFigures = (origClaim.match(/\$[\d,.]+(?:\s*(?:trillion|billion|million|thousand))?/gi) || [])
-          .map(d => d.replace(/[,\s]/g, '').toLowerCase());
-        if (figures.some(f => origFigures.includes(f))) return true;
-      }
+    if (kWords.filter(w => keyWords.has(w)).length / Math.max(keyWords.size, kWords.length) >= 0.35) {
+      return origClaim || claim;
+    }
+    if (figures.length && origClaim) {
+      const origFigures = (origClaim.match(/\$[\d,.]+(?:\s*(?:trillion|billion|million|thousand))?/gi) || [])
+        .map(d => d.replace(/[,\s]/g, '').toLowerCase());
+      if (figures.some(f => origFigures.includes(f))) return origClaim;
     }
   }
 
-  recentClaims.set(key, [now, claim]);
-  return false;
+  return '';
+}
+
+// Is the repeat worth showing in place of what is already on the card? Only when it says
+// the same thing AND adds to it — the automatic pass sees a six-sentence window, so it
+// often completes a ⭐ fragment the user marked. His call (2026-09-24): one card, the
+// fuller wording, and he trims it with ✏️ if it went too far.
+function isRicherClaim(candidate, existing) {
+  const words = s => normalizeClaimKey(s).split(' ').filter(Boolean);
+  const oldWords = words(existing), newWords = new Set(words(candidate));
+  if (!oldWords.length) return false;
+  const kept = oldWords.filter(w => newWords.has(w)).length / oldWords.length;
+  return kept >= 0.6 && candidate.trim().length >= existing.trim().length * 1.2;
 }
 
 // ── Rolling window ────────────────────────────────────────────────────────────
@@ -565,6 +616,7 @@ let windowLexical = { rates: { hedging: 0, certainty: 0, filler: 0, emotional: 0
 let windowStartTime = null;
 let pageTitle = '';
 let pageDate = '';
+let sessionStartedAt = null; // when HE pressed Start — the date the prompts get
 let currentSpeakerId = null;
 let lastSpeakerId = null;
 let speakerIdToName = {};
@@ -695,7 +747,11 @@ async function evaluateClaims(contextText, title, lexicalSummary, lexicalSnapsho
       EVALUATE_PROMPT
     )).text;
     const results = parseArray(raw);
-    const valid = results.filter(r => r.claim && r.verdict && !isDuplicate(r.claim));
+    const valid = results.filter(r => {
+      if (!r.claim || !r.verdict || duplicateOf(r.claim)) return false;
+      rememberClaim(r.claim); // only what survives is remembered
+      return true;
+    });
 
     if (!valid.length) return;
 
@@ -771,8 +827,18 @@ async function groundAndUpdate(contextText, fastResults, title, lexicalSummary, 
 // ⭐ ones, so they stay in sync: Gladia gives us no speaker labels, so the model infers
 // who is speaking, constrained to the user's Participants (or names parsed from the
 // title). Anyone not listed → "Otro"; only null when truly impossible.
+// "2026-09-24 16:22" — unambiguous for a model, unlike a locale-formatted date.
+function clockDateTime(ms) {
+  const d = new Date(ms || Date.now());
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 function buildParticipantContext(title) {
-  const dateContext = pageDate ? `\nDate: ${pageDate}` : '';
+  // The page almost never publishes a date, and without one the model dates the event by
+  // its own (frozen) knowledge: it turned "last May, we created the Board of Trade" into a
+  // plan for a visit still to come. The clock is the reliable source — we are watching live.
+  const dateContext = `\nDate and time, happening live right now: ${pageDate || clockDateTime(sessionStartedAt)}`;
   const participantList = PARTICIPANTS
     ? PARTICIPANTS.split(',').map(s => s.trim()).filter(Boolean)
     : parseSpeakersFromTitle(title || '');
@@ -854,19 +920,33 @@ async function extractKeyPoints(contextText, title, lexicalSummary, lexicalSnaps
       feedbackCtx += `\n\nThe user marked these as important — prioritise anything similar:\n- ${POS_EXAMPLES.slice(-15).join('\n- ')}`;
     }
 
-    const raw = (await callClaude(
+    const answer = await callClaude(
       `${titleContext}Transcript: "${contextText}"${alreadyNoted}${feedbackCtx}`,
       keypointsPrompt(),
       false, 2048, true, true
-    )).text;
+    );
+    const raw = answer.text;
     const obj = parseObject(raw);
     const results = (obj && Array.isArray(obj.points)) ? obj.points : parseArray(raw);
     // Hard cap: keep at most the single most newsworthy point per excerpt, even if
     // the model returns several — the prompt asks for ≤1, this guards against drift.
-    // quoteInContext BEFORE isDuplicate: reject fabricated/echoed quotes not in this
-    // window, and (via .find) avoid isDuplicate registering a point we discard.
-    const candidate = results.find(r => r.point && quoteInContext(r.quote, contextText) && !isDuplicate(r.point));
+    // quoteInContext first: reject fabricated/echoed quotes not in this window.
+    const usable = results.filter(r => r.point && quoteInContext(r.quote, contextText));
+    // A brand-new point wins; otherwise the best repeat, which may still expand its card.
+    const candidate = usable.find(r => !duplicateOf(r.point)) || usable[0];
     if (!candidate) return;
+
+    const repeats = duplicateOf(candidate.point);
+    if (repeats) {
+      // Same statement said (or interpreted) again. One card: keep the fuller wording.
+      if (!isRicherClaim(candidate.point, repeats)) return;
+      rememberClaim(candidate.point);
+      if (activeTabId) {
+        sendToTab(activeTabId, { type: 'EXPAND_KEYPOINT', previous: repeats, point: candidate.point });
+      }
+      return;
+    }
+    rememberClaim(candidate.point);
     const valid = [candidate];
 
     if (activeTabId) {
@@ -880,7 +960,10 @@ async function extractKeyPoints(contextText, title, lexicalSummary, lexicalSnaps
             || (r.speaker && !String(r.speaker).match(/^Speaker\s*\d+$/i) ? r.speaker : null),
           dominantSpeakerId,
           model: activeProvider,
-          timecode: findQuoteTimecode(r.quote || r.point, windowSentences),
+          modelId: answer.model,
+          // An interpreted passage keeps the ORIGINAL speaker's timecode: that is where he
+          // cuts the clip from, and the interpreter's audio cannot be used for it.
+          timecode: originalTimecode(findQuoteTimecode(r.quote || r.point, windowSentences)),
         })),
       });
     }
@@ -903,14 +986,15 @@ async function addManualKeyPoint(text, speaker, context, timecode) {
     const contextBlock = (context && context.trim())
       ? `Preceding transcript (CONTEXT ONLY — do NOT summarize this; use it to tell who is speaking and what the fragment refers to):\n"${context.trim()}"\n\n`
       : '';
-    const raw = (await callClaude(
+    const answer = await callClaude(
       `${titleContext}${contextBlock}Fragment to turn into a key point: "${text}"`,
       manualKeypointPrompt(), false, 512, true
-    )).text;
-    const kp = parseObject(raw);
+    );
+    const kp = parseObject(answer.text);
     const result = (kp && kp.point)
-      ? { point: kp.point, category: (kp.category || catOther).toUpperCase(), quote: kp.quote || text, speaker: spk || kp.speaker || null, dominantSpeakerId: null, model: activeProvider, timecode: tc }
-      : { point: text, category: catOther, quote: text, speaker: spk, dominantSpeakerId: null, model: activeProvider, timecode: tc };
+      ? { point: kp.point, category: (kp.category || catOther).toUpperCase(), quote: kp.quote || text, speaker: spk || kp.speaker || null, dominantSpeakerId: null, model: activeProvider, modelId: answer.model, timecode: tc }
+      : { point: text, category: catOther, quote: text, speaker: spk, dominantSpeakerId: null, model: activeProvider, modelId: answer.model, timecode: tc };
+    rememberClaim(result.point);
     if (activeTabId) sendToTab(activeTabId, { type: 'NEW_KEYPOINTS', results: [result] });
   } catch (err) {
     console.error('[manual-keypoint] error:', err);
@@ -957,8 +1041,12 @@ async function verifyKeyPoint(id, claim, quote) {
 
 async function summarizeSession(input) {
   try {
-    const { text } = await callClaude(input, summaryPrompt(), false, 2048);
-    if (activeTabId) sendToTab(activeTabId, { type: 'SUMMARY_RESULT', text: text || '' });
+    const { text, model } = await callClaude(input, summaryPrompt(), false, 2048);
+    if (activeTabId) {
+      sendToTab(activeTabId, {
+        type: 'SUMMARY_RESULT', text: stripMarkdown(text), provider: activeProvider, modelId: model,
+      });
+    }
   } catch (err) {
     console.error('[summary] error:', err);
     if (activeTabId) sendToTab(activeTabId, { type: 'SUMMARY_RESULT', text: '' });
@@ -1083,8 +1171,11 @@ function notifyTranslator(label) {
 // content. Google keeps retrying meanwhile, and if it gets through it REPLACES the AI
 // version. A late AI answer never overwrites Google's. When Google succeeds on its first
 // try, the AI is never called — so no request quota is spent on lines that didn't need it.
-async function translateLine(text, report, sourceCode) {
+// `shouldStop()` (optional) ends the work early once a better translation arrived
+// elsewhere (Gladia's): no more retries, no AI call, and it doesn't count as a failure.
+async function translateLine(text, report, sourceCode, shouldStop) {
   if (!text || !text.trim()) return;
+  const stopped = () => !!(shouldStop && shouldStop());
   const target = getUiLang();
   const source = baseLang(sourceCode);
   let settled = false;   // Google has the final word
@@ -1092,12 +1183,12 @@ async function translateLine(text, report, sourceCode) {
   let lastError = null;
 
   const askAi = () => {
-    if (aiRequested) return;
+    if (aiRequested || stopped()) return;
     aiRequested = true;
     callClaude(text, translatePrompt(source), false, 768, false, true)
       .then(r => {
-        const out = (r.text || '').trim();
-        if (out && !settled) report(out, 'ai');
+        const out = stripMarkdown(r.text).trim();
+        if (out && !settled && !stopped()) report(out, 'ai');
       })
       .catch(() => {});
   };
@@ -1107,8 +1198,10 @@ async function translateLine(text, report, sourceCode) {
 
   for (const delay of GOOGLE_TRANSLATE_DELAYS) {
     if (delay) await new Promise(r => setTimeout(r, delay));
+    if (stopped()) return;
     try {
       const { translated, detected } = await translateWithGoogle(text, target);
+      if (stopped()) return;
       settled = true;
       googleFailedLines = 0;
       if (googleWasPaused) { googleWasPaused = false; notifyTranslator(t('bg_gt_recovered')); }
@@ -1124,6 +1217,7 @@ async function translateLine(text, report, sourceCode) {
     } catch (err) {
       lastError = err;
     }
+    if (stopped()) return;
     askAi();
     if (Date.now() < googlePausedUntil) return; // another line tripped the breaker meanwhile
   }
@@ -1148,6 +1242,226 @@ function getClockTimecode() {
 // Identifies a final transcript line so its translation can find it later. Time-based,
 // so ids never collide with lines restored from a backup after a browser restart.
 let transcriptLineSeq = 0;
+
+// ── Gladia's live translation ─────────────────────────────────────────────────
+// Gladia translates every utterance itself, in the same pipeline as the transcription, so
+// it is the primary translator; Google and then the AI only step in for a line Gladia
+// hasn't translated within GLADIA_TRANSLATION_WAIT_MS. Its answer always wins: it replaces
+// a fallback version already on screen, and fallback reports that come later are dropped.
+//
+// Matching a translation to its line: Gladia's docs show different formats for the
+// transcript's `id` and the translation's `utterance_id`, so the id may not match. Then
+// the utterance's start/end times, then its exact original text. Which one matched is
+// logged, as evidence while this is on trial.
+const GLADIA_TRANSLATION_WAIT_MS = 5000;
+const GLADIA_EARLY_TRANSLATION_TTL_MS = 15000; // a translation that beat its line waits this long
+const GLADIA_MAX_LINES = 300;
+const GLADIA_TIME_TOLERANCE_S = 0.05;
+const GLADIA_SILENT_LINES = 3; // lines that fell back with no Gladia translation ever seen
+let gladiaTranslationActive = false;
+let gladiaGeneration = 0;      // bumped per Gladia session: utterance ids restart on reconnect
+let gladiaLines = [];          // recent final lines, oldest first
+let gladiaEarlyTranslations = [];
+let gladiaTranslationsSeen = 0;
+let gladiaFallbackLines = 0;
+let gladiaTranslatorAnnounced = false;
+
+function resetGladiaTranslation() {
+  gladiaTranslationActive = false;
+  gladiaLines = [];
+  gladiaEarlyTranslations = [];
+  gladiaTranslationsSeen = 0;
+  gladiaFallbackLines = 0;
+  gladiaTranslatorAnnounced = false;
+}
+
+// `model` is Gladia's translation model, named in the marker so each export records which
+// one produced it, and in the console so runs can be told apart there too.
+function onGladiaSession(translation, model) {
+  gladiaGeneration++;
+  gladiaEarlyTranslations = [];
+  gladiaTranslationActive = !!translation;
+  console.log(`[translate] ── Gladia session started — translation ${gladiaTranslationActive ? 'on, model ' + (model || '?') : 'off'} ──`);
+  if (gladiaTranslationActive && !gladiaTranslatorAnnounced) {
+    gladiaTranslatorAnnounced = true;
+    notifyTranslator(fmt(t('bg_tr_gladia_on'), { model: model || '?' }));
+  }
+}
+
+function sameGladiaTime(a, b) {
+  return typeof a === 'number' && typeof b === 'number' && Math.abs(a - b) <= GLADIA_TIME_TOLERANCE_S;
+}
+
+const GLADIA_MATCHERS = [
+  ['id', (line, tr) => line.utteranceId != null && tr.utteranceId != null && String(line.utteranceId) === String(tr.utteranceId)],
+  ['time', (line, tr) => sameGladiaTime(line.start, tr.start) && sameGladiaTime(line.end, tr.end)],
+  ['text', (line, tr) => !!tr.original && line.text.trim() === tr.original],
+];
+
+// The newest untranslated line of this Gladia session that `tr` belongs to.
+function findGladiaLine(tr) {
+  for (const [method, matches] of GLADIA_MATCHERS) {
+    for (let i = gladiaLines.length - 1; i >= 0; i--) {
+      const line = gladiaLines[i];
+      if (!line.gladiaDone && !line.gladiaRejected && line.generation === gladiaGeneration && matches(line, tr)) {
+        return { line, method };
+      }
+    }
+  }
+  return null;
+}
+
+// Gladia sometimes hands back the original instead of a translation: in a Mandarin
+// session 5 of 33 lines came back as the Chinese text split into words with spaces, one
+// with only its last clause translated. Its live API has no way to ask again, so such a
+// "translation" is refused and the line goes to the fallbacks. The script test assumes a
+// Latin-script target, which holds for both UI languages (es, en).
+function looksUntranslated(original, translation) {
+  const squeeze = s => String(s || '').toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '');
+  const tr = squeeze(translation);
+  if (!tr || tr === squeeze(original)) return true;
+  const letters = [...tr].filter(c => /\p{L}/u.test(c));
+  const foreign = letters.filter(c => !/\p{Script=Latin}/u.test(c)).length;
+  if (foreign >= 10 || (letters.length && foreign / letters.length > 0.3)) return true;
+  // Same script as the target (e.g. Finnish): most words carried over unchanged. Names
+  // (capitalised) and numbers are the same in every language, so they don't count.
+  const words = s => String(s || '').split(/[\s\p{P}\p{S}]+/u).filter(Boolean);
+  const originalWords = new Set(words(original).map(w => w.toLowerCase()));
+  const plain = words(translation).filter(w => !/\d/.test(w) && w === w.toLowerCase());
+  if (plain.length >= 3 && plain.filter(w => originalWords.has(w)).length / plain.length >= 0.8) return true;
+  // A PART of the line can come back untranslated: a German line arrived with its
+  // beginning and its end in Spanish and the middle still in German, which neither test
+  // above sees. A stretch of words copied verbatim, in order, from the original is the
+  // signature — a real translation never reproduces a whole clause word for word.
+  return longestCopiedRun(original, translation) >= COPIED_RUN_WORDS;
+}
+
+const COPIED_RUN_WORDS = 6;
+
+// Longest run of consecutive words present, in the same order, in both texts.
+function longestCopiedRun(original, translation) {
+  const words = s => String(s || '').toLowerCase().normalize('NFD').replace(/\p{M}/gu, '')
+    .split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  const a = words(original), b = words(translation);
+  if (!a.length || !b.length) return 0;
+  let best = 0;
+  const row = new Array(a.length + 1).fill(0);
+  for (let i = 1; i <= b.length; i++) {
+    let diagonal = 0;
+    for (let j = 1; j <= a.length; j++) {
+      const above = row[j];
+      row[j] = b[i - 1] === a[j - 1] ? diagonal + 1 : 0;
+      if (row[j] > best) best = row[j];
+      diagonal = above;
+    }
+  }
+  return best;
+}
+
+function applyGladiaTranslation(line, tr, method) {
+  const untranslated = line.needs && looksUntranslated(line.text, tr.text);
+  // Even a line he understands feeds the interpretation index: its Spanish is what a later
+  // interpreted line gets compared against (and vice versa). Nothing of this is shown.
+  if (!untranslated) indexSpokenLine(line.timecode, line.language, tr.text);
+  console.log(`[translate] gladia matched by ${method}, ${Date.now() - line.at} ms after its line` +
+    (!line.needs ? ' (line needs no translation: ignored)'
+      : untranslated ? ' — came back UNTRANSLATED, the fallbacks take over' : ''));
+  if (untranslated) {
+    line.gladiaRejected = true;
+    if (line.startFallback) line.startFallback();
+    return;
+  }
+  line.gladiaDone = true;
+  if (!line.needs || activeTabId !== line.tabId) return;
+  sendToTab(line.tabId, { type: 'TRANSCRIPT_TRANSLATION', lineId: line.lineId, translation: tr.text, source: 'gladia' });
+}
+
+function onGladiaTranslation(tr) {
+  if (!activeTabId || !tr || !tr.text) return;
+  gladiaTranslationsSeen++;
+  const now = Date.now();
+  gladiaEarlyTranslations = gladiaEarlyTranslations.filter(x => {
+    if (now - x.at < GLADIA_EARLY_TRANSLATION_TTL_MS) return true;
+    console.warn('[translate] gladia translation never matched a line:', x.tr);
+    return false;
+  });
+  const found = findGladiaLine(tr);
+  if (found) applyGladiaTranslation(found.line, tr, found.method);
+  else gladiaEarlyTranslations.push({ tr, at: now });
+}
+
+function rememberGladiaLine(line) {
+  gladiaLines.push(line);
+  if (gladiaLines.length > GLADIA_MAX_LINES) gladiaLines.shift();
+  for (const [method, matches] of GLADIA_MATCHERS) {
+    const i = gladiaEarlyTranslations.findIndex(x => matches(line, x.tr));
+    if (i >= 0) {
+      const { tr } = gladiaEarlyTranslations.splice(i, 1)[0];
+      console.log('[translate] gladia translation arrived before its line');
+      applyGladiaTranslation(line, tr, method);
+      break;
+    }
+  }
+  return line;
+}
+
+// ── Interpreted events ────────────────────────────────────────────────────────
+// A key point must carry the timecode of the ORIGINAL speaker: he cuts the clip from
+// there, and the interpreter's audio is unusable for that. Consecutive interpretation
+// repeats each statement in another language a few seconds later, and the interpreted
+// version is often the FULLER one (the recogniser chops Mandarin into short utterances
+// that Gladia then translates one by one), so the point may well be extracted from it.
+//
+// Everything is compared in Spanish: Gladia translates EVERY utterance, including the
+// ones in a language he understands, which used to be thrown away. A line that covers
+// what an earlier line in ANOTHER language said is the interpretation of it, and points
+// found there keep the original's timecode.
+const SPOKEN_INDEX_MS = 180000;
+const SPOKEN_INDEX_MAX = 300;
+const INTERPRETED_COVERAGE = 0.6;
+let spokenIndex = [];                 // { timecode, lang, es, at }, oldest first
+const interpretedOrigin = new Map();  // interpretation timecode → original timecode
+
+function resetInterpretationIndex() {
+  spokenIndex = [];
+  interpretedOrigin.clear();
+}
+
+function contentWords(text) {
+  return String(text || '').toLowerCase().normalize('NFD').replace(/\p{M}/gu, '')
+    .split(/[^\p{L}\p{N}]+/u).filter(w => w.length >= 4);
+}
+
+// Containment, not equality: one interpreted sentence usually covers several short
+// original utterances, so the question is whether the earlier line is INSIDE this one.
+function coversEarlier(words, earlierSpanish) {
+  const earlier = contentWords(earlierSpanish);
+  if (earlier.length < 3) return false;
+  const seen = new Set(words);
+  return earlier.filter(w => seen.has(w)).length / earlier.length >= INTERPRETED_COVERAGE;
+}
+
+function indexSpokenLine(timecode, lang, spanish) {
+  if (!timecode || !spanish || interpretedOrigin.has(timecode)) return;
+  const now = Date.now();
+  spokenIndex = spokenIndex.filter(e => now - e.at < SPOKEN_INDEX_MS).slice(-SPOKEN_INDEX_MAX);
+  const base = baseLang(lang);
+  const words = contentWords(spanish);
+  for (const e of spokenIndex) { // oldest first: the earliest original wins
+    if (!e.es || (base && e.lang && e.lang === base)) continue;
+    if (!coversEarlier(words, e.es)) continue;
+    const origin = interpretedOrigin.get(e.timecode) || e.timecode;
+    interpretedOrigin.set(timecode, origin);
+    console.log(`[keypoints] ${timecode} repeats ${origin} in another language (interpretation) — key points keep ${origin}`);
+    break;
+  }
+  spokenIndex.push({ timecode, lang: base, es: spanish, at: now });
+}
+
+// The timecode to show for a point found in an interpreted passage.
+function originalTimecode(timecode) {
+  return interpretedOrigin.get(timecode) || timecode;
+}
 
 function relayTranscript(msg, timecode) {
   if (!activeTabId) return;
@@ -1175,12 +1489,45 @@ function relayTranscript(msg, timecode) {
     lineId,
   });
 
-  if (!msg.isFinal || !needsTranslation(msg.language)) return;
-  translateLine(msg.text, (text, source) => {
+  if (!msg.isFinal) return;
+  const needs = needsTranslation(msg.language);
+  const report = (text, source) => {
     // The session may have ended, or moved to another tab, while we were translating.
     if (activeTabId !== tabId) return;
+    indexSpokenLine(timecode, msg.language, text); // whoever translated it, Spanish is Spanish
     sendToTab(tabId, { type: 'TRANSCRIPT_TRANSLATION', lineId, translation: text, source });
-  }, msg.language);
+  };
+
+  // Already in the language the comparison uses: index it as it was said.
+  if (baseLang(msg.language) === getUiLang()) indexSpokenLine(timecode, msg.language, msg.text);
+
+  if (!gladiaTranslationActive) {
+    if (needs) translateLine(msg.text, report, msg.language);
+    return;
+  }
+
+  // Every final line is remembered, even one that needs no translation: Gladia translates
+  // them all, and its translation must find its own line rather than a neighbour's.
+  const line = {
+    lineId, tabId, text: msg.text, needs, at: Date.now(), gladiaDone: false, gladiaRejected: false,
+    generation: gladiaGeneration, utteranceId: msg.utteranceId ?? null,
+    start: msg.start ?? null, end: msg.end ?? null,
+    timecode, language: msg.language || '',
+  };
+  const gladiaWon = () => line.gladiaDone || activeTabId !== tabId;
+  // Runs once: when Gladia is late, or at once when its answer came back untranslated.
+  let fallbackStarted = false;
+  line.startFallback = () => {
+    if (!needs || fallbackStarted || gladiaWon()) return;
+    fallbackStarted = true;
+    if (!line.gladiaRejected && gladiaTranslationsSeen === 0 && ++gladiaFallbackLines === GLADIA_SILENT_LINES) {
+      console.warn('[translate] gladia has sent no translation yet — the fallbacks are translating');
+      notifyTranslator(t('bg_tr_gladia_silent'));
+    }
+    translateLine(msg.text, (text, source) => { if (!line.gladiaDone) report(text, source); }, msg.language, gladiaWon);
+  };
+  rememberGladiaLine(line);
+  if (needs) setTimeout(line.startFallback, GLADIA_TRANSLATION_WAIT_MS);
 }
 
 // ── Messages ──────────────────────────────────────────────────────────────────
@@ -1257,6 +1604,11 @@ browser.runtime.onMessage.addListener((msg, sender) => {
     // it just to end it, freeing the slot before asking for a new one.
     case 'GLADIA_SESSION':
       gladiaSessionUrl = msg.url || null;
+      onGladiaSession(msg.translation, msg.translationModel);
+      return Promise.resolve();
+
+    case 'GLADIA_TRANSLATION':
+      onGladiaTranslation(msg);
       return Promise.resolve();
 
     case 'CAPTURE_READY':
@@ -1372,6 +1724,9 @@ async function startFactCheck() {
   captureClaimedBy = null;
   captureMode = null;
   gladiaSessionUrl = null;
+  sessionStartedAt = Date.now();
+  resetGladiaTranslation();
+  resetInterpretationIndex();
 
   await sendToTab(activeTabId, { type: 'START_FACTCHECK', sessionId, resume: false });
   return { ok: true };
@@ -1382,6 +1737,7 @@ function stopFactCheck() {
   recentClaims.clear();
   pageTitle = '';
   pageDate = '';
+  sessionStartedAt = null;
   captureClaimedBy = null;
 
   if (!isCapturing) return;
@@ -1394,6 +1750,8 @@ function stopFactCheck() {
   activeTabId = null;
   sessionId = null;
   gladiaSessionUrl = null;
+  resetGladiaTranslation();
+  resetInterpretationIndex();
   isCapturing = false;
 }
 

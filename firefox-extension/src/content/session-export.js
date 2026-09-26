@@ -8,6 +8,7 @@ const sessionLog = [];
 const transcriptLog = [];
 const keyPointsLog = [];
 let sessionSummary = '';
+let sessionSummaryModel = ''; // "Mistral · mistral-large-2512" — who wrote the summary
 let sessionStartTime = null;
 
 // ── Surviving a page reload ───────────────────────────────────────────────────
@@ -34,6 +35,7 @@ function persistSession() {
         transcriptLog,
         keyPointsLog,
         summary: sessionSummary,
+        summaryModel: sessionSummaryModel,
       },
     }).catch(() => {});
   }, 1500);
@@ -51,6 +53,7 @@ async function restoreSession(id) {
   sessionId = id;
   sessionStartTime = stored.startTime || Date.now();
   sessionSummary = stored.summary || '';
+  sessionSummaryModel = stored.summaryModel || '';
   sessionLog.length = 0;
   transcriptLog.length = 0;
   keyPointsLog.length = 0;
@@ -117,6 +120,7 @@ function logKeyPoint(kp) {
     quote: kp.quote || '',
     speaker: kp.speaker || null,
     model: kp.model || '',
+    modelId: kp.modelId || '',
     verdict: '',
     verdictExplanation: '',
     sources: [],
@@ -149,10 +153,21 @@ function updateKeyPointVerdict(id, result) {
   persistSession();
 }
 
-// Compact input for the final summary: prefer the curated key points; fall back to
-// the (capped) transcript if there are none yet.
+// Input for the final summary: the key points AND the transcript. Key points alone left
+// the model with too little: a Mandarin briefing with a single key point got a summary
+// about that one topic, padded with background nobody said, while most of what was said
+// was missing. The transcript is only left out of a long session that already has enough
+// key points to stand for it.
+const SUMMARY_TRANSCRIPT_CHARS = 8000;
+const SUMMARY_ENOUGH_KEYPOINTS = 5;
+
 function buildSummaryInput() {
-  const title = document.title || '';
+  // The date matters as much as the text: without it the model dated the event by its own
+  // frozen knowledge and announced as upcoming a meeting the speakers described as past.
+  const d = new Date(sessionStartTime || Date.now());
+  const p = n => String(n).padStart(2, '0');
+  const when = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  const parts = [t('ex_title_label') + ' ' + (document.title || ''), t('ex_when_label') + ' ' + when];
   if (keyPointsLog.length) {
     const lines = keyPointsLog.map(kp => {
       const spk = kp.speaker ? kp.speaker + ': ' : '';
@@ -160,17 +175,40 @@ function buildSummaryInput() {
       const v = kp.verdict ? ' [' + promptLang().verifiedMarker + ': ' + kp.verdict + ']' : '';
       return '- [' + (kp.timecode || '') + '] ' + spk + kp.point + v;
     });
-    return t('ex_title_label') + ' ' + title + '\n\n' + t('ex_kp_label') + '\n' + lines.join('\n');
+    parts.push(t('ex_kp_label') + '\n' + lines.join('\n'));
   }
   // What was actually SAID — never the translations. The summary prompt already writes in
   // the UI language, and an AI translation can rewrite content: preferring translations
   // put a name the translator had invented straight into a summary. Model-change markers
   // have no text and used to be joined in as the literal word "undefined".
-  const tr = transcriptLog.filter(x => !x.modelChange && x.text).map(x => x.text).join(' ');
-  return t('ex_title_label') + ' ' + title + '\n\n' + t('ex_tr_label') + '\n' + tr.slice(0, 8000);
+  const spoken = transcriptLog.filter(x => !x.modelChange && x.text);
+  const tr = spoken.map(x => x.text).join(' ');
+  const fits = tr.length <= SUMMARY_TRANSCRIPT_CHARS;
+  if (tr && (fits || keyPointsLog.length < SUMMARY_ENOUGH_KEYPOINTS)) {
+    parts.push(t('ex_tr_label') + '\n' + headAndTail(tr, SUMMARY_TRANSCRIPT_CHARS));
+    // Gladia's machine translation as a reading aid, never the AI's: when recognition
+    // garbled a name (高市早苗 → "高市扫描"), the model swapped in the prime minister it knew,
+    // while Gladia had translated "Takaichi". summaryPrompt() says the original wins.
+    const mt = spoken.filter(x => x.translationSource === 'gladia' && x.translation).map(x => x.translation).join(' ');
+    if (mt) parts.push(t('ex_mt_label') + '\n' + headAndTail(mt, SUMMARY_TRANSCRIPT_CHARS));
+  }
+  return parts.join('\n\n');
 }
 
-function setSummary(text) { sessionSummary = text || ''; persistSession(); }
+// Too long: keep the opening and the end rather than only the opening.
+function headAndTail(text, max) {
+  if (text.length <= max) return text;
+  const half = max / 2;
+  return text.slice(0, half) + ' […] ' + text.slice(-half);
+}
+
+// Which provider AND model wrote the summary: with a model-level fallback in the proxy,
+// "Mistral" alone doesn't say whether the big model answered or a smaller one took over.
+function setSummary(text, provider, modelId) {
+  sessionSummary = text || '';
+  sessionSummaryModel = text ? [providerLabel(provider), modelId].filter(Boolean).join(' · ') : '';
+  persistSession();
+}
 
 // Is there anything worth saving? Used by the ✕ guard: an empty session closes without
 // asking, one with content offers to export first.
@@ -191,6 +229,7 @@ function startSession(id) {
   transcriptLog.length = 0;
   keyPointsLog.length = 0;
   sessionSummary = '';
+  sessionSummaryModel = '';
   sessionStartTime = Date.now();
   sessionId = (id === undefined || id === null) ? Date.now() : id;
   persistSession();
@@ -295,7 +334,8 @@ function exportPDF() {
         const catColor = catMeta ? catMeta.color : '#64748b';
         const spk = kp.speaker ? '<span class="kp-speaker" style="color:' + speakerColor(kp.speaker) + '">' + escapeHtml(kp.speaker) + '</span>' : '';
         const modelTag = kp.model
-          ? '<span class="kp-model">' + escapeHtml(t('ov_via') + ' ' + providerLabel(kp.model)) + '</span>'
+          ? '<span class="kp-model">' + escapeHtml(t('ov_via') + ' ' + providerLabel(kp.model) +
+            (kp.modelId ? ' · ' + kp.modelId : '')) + '</span>'
           : '';
         const quote = kp.quote ? '<div class="kp-quote">“' + escapeHtml(kp.quote) + '”</div>' : '';
         let verdict = '';
@@ -323,7 +363,8 @@ function exportPDF() {
     : '';
 
   const summaryHTML = sessionSummary
-    ? '<div class="summary-box"><div class="summary-box-title">' + escapeHtml(t('ex_summary')) + '</div>' +
+    ? '<div class="summary-box"><div class="summary-box-title">' + escapeHtml(t('ex_summary')) +
+      (sessionSummaryModel ? ' <span class="kp-model">' + escapeHtml(t('ov_via') + ' ' + sessionSummaryModel) + '</span>' : '') + '</div>' +
       '<div class="summary-box-text">' + escapeHtml(sessionSummary) + '</div></div>'
     : '';
 
@@ -331,8 +372,19 @@ function exportPDF() {
   // Resolved out here: the map below names its item `t`, which shadows the i18n t().
   const aiBadgeHTML = '<span class="ai-badge" title="' + escapeHtml(t('ov_ai_badge_title')) + '">' +
     escapeHtml(t('ov_ai_badge')) + '</span>';
+  const engineTitles = { gladia: t('ov_tr_by_gladia'), google: t('ov_tr_by_google'), ai: t('ov_ai_badge_title') };
+  // How many lines each translator ended up owning — the numbers to judge the engines by.
+  const trCounts = { gladia: 0, google: 0, ai: 0 };
+  transcriptLog.forEach(x => {
+    if (!x.modelChange && x.translation && x.translation.trim() && x.translation.trim() !== (x.text || '').trim() &&
+        trCounts[x.translationSource] !== undefined) trCounts[x.translationSource]++;
+  });
+  const trCountsHTML = (trCounts.gladia + trCounts.google + trCounts.ai)
+    ? '<div class="transcript-model">' + escapeHtml(fmt(t('ex_tr_counts'), trCounts)) + '</div>'
+    : '';
   const transcriptHTML = transcriptLog.length
     ? '<div class="claims-title">' + escapeHtml(t('ex_transcript')) + ' (' + transcriptLog.filter(x => !x.modelChange).length + ')</div>' +
+      trCountsHTML +
       '<div class="transcript">' +
         transcriptLog.map(t => {
           // Model-change marker (not a spoken line): render inline in the flow.
@@ -347,7 +399,8 @@ function exportPDF() {
           }
           const isAi = t.translationSource === 'ai';
           const tr = (t.translation && t.translation.trim() && t.translation.trim() !== (t.text || '').trim())
-            ? '<div class="transcript-tr' + (isAi ? ' transcript-tr-ai' : '') + '">↳ ' +
+            ? '<div class="transcript-tr' + (isAi ? ' transcript-tr-ai' : '') + '"' +
+              (engineTitles[t.translationSource] ? ' title="' + escapeHtml(engineTitles[t.translationSource]) + '"' : '') + '>↳ ' +
               (isAi ? aiBadgeHTML : '') + escapeHtml(t.translation) + '</div>'
             : '';
           return spkHTML + '<div class="transcript-line">' +
