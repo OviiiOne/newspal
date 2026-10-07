@@ -1586,6 +1586,14 @@ browser.runtime.onMessage.addListener((msg) => {
       break;
     }
 
+    case 'SLATE_MARKER': {
+      // Agency slate (looping filler audio) started or ended: the span to skip in the raw.
+      const label = t(msg.edge === 'in' ? 'ov_slate_in' : 'ov_slate_out');
+      addModelMarker(label + ' [' + msg.timecode + ']');
+      if (typeof logModelChange === 'function') logModelChange(msg.timecode, label);
+      break;
+    }
+
     case 'CAPTURE_SOUND_BACK': {
       // Sound reaches us again: drop the silence warning (any other error toast stays).
       // The dot turns green again with the next transcript line.

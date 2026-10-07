@@ -1234,8 +1234,8 @@ async function translateLine(text, report, sourceCode, shouldStop) {
 
 // Computer-clock timecode HH:MM:SS:FF (FF = frame, 24 fps), captured when the
 // sentence is finalized — before any translation latency.
-function getClockTimecode() {
-  const d = new Date();
+function getClockTimecode(ms = Date.now()) {
+  const d = new Date(ms);
   const p = (n) => String(n).padStart(2, '0');
   return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
 }
@@ -1464,6 +1464,92 @@ function originalTimecode(timecode) {
   return interpretedOrigin.get(timecode) || timecode;
 }
 
+// ── Agency slates ─────────────────────────────────────────────────────────────
+// When a pool feed drops, Reuters cuts to its slate, whose audio loops "This is the
+// primary/secondary audio circuit for the Reuters live service". Transcribed, it is pure
+// noise in the feed, the key points and the LLM bill. Slate lines are dropped before
+// anything sees them, and the stretch is bracketed by two markers (SLATE IN / SLATE OUT)
+// so the matching span can be skipped in the raw recording.
+//
+// Recognised by its own words, not by repetition: a speaker may well repeat a sentence,
+// and losing real speech is worse than showing noise. Gladia mishears some of them, so
+// a line counts as the slate when it has "circuit" and "Reuters" (courts have circuits
+// too: this is a court beat) plus most of the rest, and is not
+// much longer than the phrase (a longer line may carry real speech after the cut).
+const SLATE_WORDS = [/^circuits?$/, /^(reuters?|r[ou]{1,2}ters?|royters?)$/, /^audio$/, /^live$/, /^service$/, /^(primary|secondary)$/];
+const SLATE_MIN_WORDS = 4;   // of SLATE_WORDS, "circuit" and "Reuters" among them
+const SLATE_MAX_LEN = 25;    // words
+// OUT is where the loop would have played again but didn't: the last slate line's start
+// plus the loop's period, measured between repetitions. Until a second repetition gives
+// the period, the end of the only line heard. Declared after SLATE_SILENCE_MS without a
+// repetition, or at once if real speech comes first.
+const SLATE_SILENCE_MS = 30000;
+let slate = null; // { lastStart, lastEnd, period, timer } while a slate is running
+
+function slateWordHits(text) {
+  const words = String(text || '').toLowerCase().split(/[^a-z]+/).filter(Boolean);
+  if (words.length > SLATE_MAX_LEN) return { hits: 0, anchored: false };
+  const hit = SLATE_WORDS.map(re => words.some(w => re.test(w)));
+  return { hits: hit.filter(Boolean).length, anchored: hit[0] && hit[1] };
+}
+
+function isSlateLine(text) {
+  const { hits, anchored } = slateWordHits(text);
+  return anchored && hits >= SLATE_MIN_WORDS;
+}
+
+// An interim of the slate is cut short, so fewer words are enough to hide it; only
+// interims, which a final line replaces anyway.
+function looksLikeSlateInterim(text) {
+  return slateWordHits(text).hits >= 2;
+}
+
+// Clock time a just-finalised utterance began: now minus its length in Gladia's times.
+function utteranceStartMs(msg) {
+  const durationMs = typeof msg.start === 'number' && typeof msg.end === 'number'
+    ? Math.max(0, (msg.end - msg.start) * 1000) : 0;
+  return Date.now() - durationMs;
+}
+
+function sendSlateMarker(edge, ms) {
+  const timecode = getClockTimecode(ms);
+  console.log(`[slate] ${edge} at ${timecode}`);
+  if (activeTabId) sendToTab(activeTabId, { type: 'SLATE_MARKER', edge, timecode });
+}
+
+// A final slate line: open the stretch or extend it.
+function onSlateLine(msg) {
+  const now = Date.now();
+  const start = utteranceStartMs(msg);
+  if (!slate) {
+    slate = { lastStart: start, lastEnd: now, period: 0, timer: null };
+    sendSlateMarker('in', start);
+  } else {
+    slate.period = start - slate.lastStart;
+    slate.lastStart = start;
+    slate.lastEnd = now;
+  }
+  clearTimeout(slate.timer);
+  slate.timer = setTimeout(() => closeSlate(), Math.max(SLATE_SILENCE_MS, slate.period * 1.5));
+  // Its interim may still be on screen.
+  if (activeTabId) sendToTab(activeTabId, { type: 'TRANSCRIPT_RESULT', text: '', interim: true, isFinal: false });
+}
+
+// `speechStartMs`: when real speech began, if that is what ended the slate.
+function closeSlate(speechStartMs) {
+  if (!slate) return;
+  clearTimeout(slate.timer);
+  let end = slate.period ? slate.lastStart + slate.period : slate.lastEnd;
+  if (speechStartMs) end = Math.max(slate.lastEnd, Math.min(end, speechStartMs));
+  slate = null;
+  sendSlateMarker('out', end);
+}
+
+function resetSlate() {
+  if (slate) clearTimeout(slate.timer);
+  slate = null;
+}
+
 function relayTranscript(msg, timecode) {
   if (!activeTabId) return;
   timecode = msg.isFinal ? (timecode || getClockTimecode()) : '';
@@ -1544,6 +1630,13 @@ browser.runtime.onMessage.addListener((msg, sender) => {
       return Promise.resolve({ ok: true });
 
     case 'TRANSCRIPT_RESULT':
+      // Slate audio never reaches the feed, the speaker prompt or the key points.
+      if (msg.isFinal && isSlateLine(msg.text)) { onSlateLine(msg); return Promise.resolve(); }
+      if (!msg.isFinal && looksLikeSlateInterim(msg.text)) {
+        relayTranscript({ ...msg, text: '' });
+        return Promise.resolve();
+      }
+      if (msg.isFinal && slate) closeSlate(utteranceStartMs(msg));
       if (msg.isFinal) {
         if (msg.speaker !== null && msg.speaker !== undefined) {
           currentSpeakerId = msg.speaker;
@@ -1613,6 +1706,7 @@ browser.runtime.onMessage.addListener((msg, sender) => {
       return Promise.resolve();
 
     case 'GLADIA_TRANSLATION':
+      if (isSlateLine(msg.original)) return Promise.resolve(); // its line was dropped
       onGladiaTranslation(msg);
       return Promise.resolve();
 
@@ -1798,6 +1892,7 @@ async function startFactCheck() {
   sessionStartedAt = Date.now();
   resetGladiaTranslation();
   resetInterpretationIndex();
+  resetSlate();
 
   await sendToTab(activeTabId, { type: 'START_FACTCHECK', sessionId, resume: false });
   return { ok: true };
@@ -1813,6 +1908,7 @@ function stopFactCheck() {
 
   if (!isCapturing) return;
 
+  closeSlate(Date.now()); // a stop in the middle of a slate still gets its OUT on record
   if (activeTabId) sendToTab(activeTabId, { type: 'STOP_FACTCHECK' });
 
   // Drop the saved session: it only exists to survive a reload of a LIVE session.
@@ -1823,6 +1919,7 @@ function stopFactCheck() {
   gladiaSessionUrl = null;
   resetGladiaTranslation();
   resetInterpretationIndex();
+  resetSlate();
   isCapturing = false;
 }
 
