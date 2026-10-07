@@ -586,7 +586,12 @@ function startGladiaPipeline() {
     if (socket?.readyState !== WebSocket.OPEN) return;
 
     const float32 = e.inputBuffer.getChannelData(0);
-    if (bufferHasSound(float32)) { lastSoundAt = Date.now(); silenceWarned = false; }
+    if (bufferHasSound(float32)) {
+      lastSoundAt = Date.now();
+      // The silence toast is an error (sticky); take it down once sound is back.
+      if (silenceWarned) browser.runtime.sendMessage({ type: 'CAPTURE_SOUND_BACK' });
+      silenceWarned = false;
+    }
     const int16 = new Int16Array(float32.length);
     for (let i = 0; i < float32.length; i++) {
       int16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32768));

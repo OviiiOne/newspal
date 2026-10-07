@@ -1593,6 +1593,10 @@ browser.runtime.onMessage.addListener((msg, sender) => {
       if (activeTabId) sendToTab(activeTabId, { type: 'CAPTURE_SILENT', message: msg.message, contextState: msg.contextState });
       return Promise.resolve();
 
+    case 'CAPTURE_SOUND_BACK':
+      if (activeTabId) sendToTab(activeTabId, { type: 'CAPTURE_SOUND_BACK' });
+      return Promise.resolve();
+
     // How the page ended up capturing audio ('page' | 'device'). Kept here because the
     // background outlives the reload: on resume the content script needs to know whether
     // to wait for the player or go straight back to the audio device.

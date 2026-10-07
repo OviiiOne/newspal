@@ -1576,11 +1576,21 @@ browser.runtime.onMessage.addListener((msg) => {
       // feed/export; the AudioContext state is kept when abnormal, as evidence of which
       // fault it was (never started vs a blocked stream that runs silent).
       showError(msg.message || t('ov_no_sound_marker'));
+      const toast = panel && panel.querySelector('.rtfc-error-toast');
+      if (toast) toast.dataset.kind = 'silence'; // so CAPTURE_SOUND_BACK removes only this one
       setDotState('error');
       const state = msg.contextState && msg.contextState !== 'running' ? ' [' + msg.contextState + ']' : '';
       const marker = t('ov_no_sound_marker') + state;
       addModelMarker(marker);
       if (typeof logModelChange === 'function') logModelChange(lastTranscriptTimestamp || getClockTimecode(), marker);
+      break;
+    }
+
+    case 'CAPTURE_SOUND_BACK': {
+      // Sound reaches us again: drop the silence warning (any other error toast stays).
+      // The dot turns green again with the next transcript line.
+      const toast = panel && panel.querySelector('.rtfc-error-toast[data-kind="silence"]');
+      if (toast) toast.remove();
       break;
     }
 
