@@ -474,7 +474,9 @@ function exportPDF() {
       '<div class="report-meta">' +
         '<span>📺 ' + escapeHtml(pageTitle) + '</span>' +
         '<span>🕐 ' + escapeHtml(exportDate) + '</span>' +
-        '<span>📋 ' + sessionLog.length + ' claim' + (sessionLog.length !== 1 ? 's' : '') + ' detected</span>' +
+        // Key points, not the old fact-check claims: sessionLog is no longer fed, so that
+        // count was always 0.
+        '<span>📋 ' + escapeHtml(fmt(t('ex_kp_count'), { n: keyPointsLog.length })) + '</span>' +
       '</div>' +
     '</div>' +
     summaryHTML +
