@@ -243,6 +243,10 @@ function stopSession() {
   sessionId = null;
 }
 
+// The repo by its Tangled DID, which survives a rename of the account or the repo.
+const NEWSPAL_REPO_URL = 'https://tangled.org/did:plc:esping2jbytufyhheu2aqdf4';
+const NEWSPAL_DOWNLOAD_URL = 'https://oviiione.tngl.io/newspal/';
+
 function exportPDF() {
   if (!sessionLog.length && !transcriptLog.length && !keyPointsLog.length && !sessionSummary) {
     alert(t('ex_nothing'));
@@ -467,10 +471,14 @@ function exportPDF() {
     '.ai-badge { display: inline-block; font-size: 8px; font-weight: 700; line-height: 1; padding: 1px 2px; margin-right: 4px; border: 1px solid currentColor; border-radius: 2px; vertical-align: 1px; }' +
     '.transcript-speaker { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; margin: 8px 0 2px; }' +
     '.transcript-model { font-size: 10px; font-weight: 700; color: #7c3aed; text-align: center; margin: 8px 0; letter-spacing: 0.03em; }' +
+    '.brand-link { color: inherit; text-decoration: none; }' +
+    '.brand-link:hover { text-decoration: underline; }' +
+    '.report-footer { margin-top: 32px; padding-top: 14px; border-top: 1px solid #e5e5e5; font-size: 12px; color: #555; text-align: center; }' +
+    '.cta-link { font-weight: 700; color: #1d4ed8; text-decoration: none; }' +
     '@media print { body { padding: 20px; } .claim-card { page-break-inside: avoid; } }' +
     '</style></head><body>' +
     '<div class="report-header">' +
-      '<div class="report-title">NewsPal — ' + escapeHtml(t('ex_report')) + '</div>' +
+      '<div class="report-title"><a href="' + NEWSPAL_REPO_URL + '" class="brand-link">NewsPal</a> — ' + escapeHtml(t('ex_report')) + '</div>' +
       '<div class="report-meta">' +
         '<span>📺 ' + escapeHtml(pageTitle) + '</span>' +
         '<span>🕐 ' + escapeHtml(exportDate) + '</span>' +
@@ -493,6 +501,8 @@ function exportPDF() {
         claimsHTML
       : '') +
     transcriptHTML +
+    '<div class="report-footer">' + escapeHtml(t('ex_cta_text')) + ' ' +
+      '<a href="' + NEWSPAL_DOWNLOAD_URL + '" class="cta-link">' + escapeHtml(t('ex_cta_link')) + '</a></div>' +
     '</body></html>';
 
   // window.open is blocked in extensions — use blob URL instead
