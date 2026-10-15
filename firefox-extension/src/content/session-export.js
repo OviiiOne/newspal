@@ -9,6 +9,8 @@ const transcriptLog = [];
 const keyPointsLog = [];
 let sessionSummary = '';
 let sessionSummaryModel = ''; // "Mistral · mistral-large-2512" — who wrote the summary
+let sessionSummarySources = []; // [{url, title}] of the web background blended into it
+let sessionDossier = null;      // the web background the AI was given (see background.js)
 let sessionStartTime = null;
 
 // ── Surviving a page reload ───────────────────────────────────────────────────
@@ -36,6 +38,8 @@ function persistSession() {
         keyPointsLog,
         summary: sessionSummary,
         summaryModel: sessionSummaryModel,
+        summarySources: sessionSummarySources,
+        dossier: sessionDossier,
       },
     }).catch(() => {});
   }, 1500);
@@ -54,6 +58,8 @@ async function restoreSession(id) {
   sessionStartTime = stored.startTime || Date.now();
   sessionSummary = stored.summary || '';
   sessionSummaryModel = stored.summaryModel || '';
+  sessionSummarySources = Array.isArray(stored.summarySources) ? stored.summarySources : [];
+  sessionDossier = stored.dossier || null;
   sessionLog.length = 0;
   transcriptLog.length = 0;
   keyPointsLog.length = 0;
@@ -61,7 +67,7 @@ async function restoreSession(id) {
   (stored.transcriptLog || []).forEach(x => transcriptLog.push(x));
   (stored.keyPointsLog  || []).forEach(x => keyPointsLog.push(x));
 
-  return { transcript: transcriptLog, keyPoints: keyPointsLog, summary: sessionSummary };
+  return { transcript: transcriptLog, keyPoints: keyPointsLog, summary: sessionSummary, summarySources: sessionSummarySources };
 }
 
 function logVerdict(result) {
@@ -118,6 +124,7 @@ function logKeyPoint(kp) {
     category: kp.category || promptLang().catOther,
     point: kp.point,
     quote: kp.quote || '',
+    context: kp.context || '',
     speaker: kp.speaker || null,
     model: kp.model || '',
     modelId: kp.modelId || '',
@@ -204,9 +211,15 @@ function headAndTail(text, max) {
 
 // Which provider AND model wrote the summary: with a model-level fallback in the proxy,
 // "Mistral" alone doesn't say whether the big model answered or a smaller one took over.
-function setSummary(text, provider, modelId) {
+function setSummary(text, provider, modelId, sources) {
   sessionSummary = text || '';
   sessionSummaryModel = text ? [providerLabel(provider), modelId].filter(Boolean).join(' · ') : '';
+  sessionSummarySources = (text && Array.isArray(sources)) ? sources : [];
+  persistSession();
+}
+
+function setDossier(dossier) {
+  sessionDossier = dossier || null;
   persistSession();
 }
 
@@ -230,6 +243,8 @@ function startSession(id) {
   keyPointsLog.length = 0;
   sessionSummary = '';
   sessionSummaryModel = '';
+  sessionSummarySources = [];
+  sessionDossier = null;
   sessionStartTime = Date.now();
   sessionId = (id === undefined || id === null) ? Date.now() : id;
   persistSession();
@@ -241,6 +256,15 @@ function stopSession() {
   // that background.js is deleting at this very moment.
   if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; }
   sessionId = null;
+}
+
+// Links to the web pages a background came from ([{url, title}]); http(s) only.
+function webSourcesHTML(sources) {
+  const links = (sources || []).filter(s => s && /^https?:\/\//.test(s.url || ''));
+  if (!links.length) return '';
+  return '<div class="web-sources">🌐 ' + escapeHtml(t('ov_web_sources')) + ': ' +
+    links.map((s, i) => '<a href="' + escapeHtml(s.url) + '" class="source-link">' +
+      escapeHtml(s.title || (t('ex_source') + ' ' + (i + 1))) + '</a>').join('') + '</div>';
 }
 
 // The repo by its Tangled DID, which survives a rename of the account or the repo.
@@ -342,6 +366,9 @@ function exportPDF() {
             (kp.modelId ? ' · ' + kp.modelId : '')) + '</span>'
           : '';
         const quote = kp.quote ? '<div class="kp-quote">“' + escapeHtml(kp.quote) + '”</div>' : '';
+        const context = kp.context
+          ? '<div class="kp-context">🌐 ' + escapeHtml(t('ov_kp_context')) + ': ' + escapeHtml(kp.context) + '</div>'
+          : '';
         let verdict = '';
         if (kp.verdict) {
           const vc = verdictColor(kp.verdict, kp.confidence);
@@ -361,6 +388,7 @@ function exportPDF() {
           '</div>' +
           '<div class="kp-point">' + escapeHtml(kp.point) + '</div>' +
           quote +
+          context +
           verdict +
         '</div>';
       }).join('')
@@ -369,7 +397,23 @@ function exportPDF() {
   const summaryHTML = sessionSummary
     ? '<div class="summary-box"><div class="summary-box-title">' + escapeHtml(t('ex_summary')) +
       (sessionSummaryModel ? ' <span class="kp-model">' + escapeHtml(t('ov_via') + ' ' + sessionSummaryModel) + '</span>' : '') + '</div>' +
-      '<div class="summary-box-text">' + escapeHtml(sessionSummary) + '</div></div>'
+      '<div class="summary-box-text">' + escapeHtml(sessionSummary) + '</div>' +
+      webSourcesHTML(sessionSummarySources) + '</div>'
+    : '';
+
+  // What the AI was given as web background, and from where — so a name or a fact in the
+  // summary can be traced back to a search rather than to the event.
+  const dossierHTML = sessionDossier
+    ? '<div class="summary-box dossier-box"><div class="summary-box-title">🌐 ' + escapeHtml(t('ex_dossier_title')) +
+      ' <span class="kp-model">' + escapeHtml(fmt(t('ex_dossier_meta'), {
+        model: sessionDossier.model || '?', searches: sessionDossier.searches || 0,
+      })) + '</span></div>' +
+      (sessionDossier.names && sessionDossier.names.length
+        ? '<div class="summary-box-text">' + escapeHtml(sessionDossier.names
+            .map(n => n.role ? n.name + ' (' + n.role + ')' : n.name).join('; ')) + '</div>'
+        : '') +
+      (sessionDossier.background ? '<div class="summary-box-text">' + escapeHtml(sessionDossier.background) + '</div>' : '') +
+      webSourcesHTML(sessionDossier.sources) + '</div>'
     : '';
 
   let trLastSpk = null;
@@ -461,6 +505,10 @@ function exportPDF() {
     '.kp-model { font-size: 10px; font-weight: 600; color: #7c3aed; }' +
     '.kp-point { font-size: 13px; color: #222; margin-bottom: 4px; }' +
     '.kp-quote { font-size: 12px; font-style: italic; color: #666; }' +
+    '.kp-context { font-size: 12px; color: #0f766e; margin-top: 4px; }' +
+    '.web-sources { font-size: 11px; color: #555; margin-top: 8px; }' +
+    '.web-sources a { margin-right: 10px; }' +
+    '.dossier-box { margin-top: 16px; }' +
     '.kp-verdict { font-size: 12px; color: #444; margin-top: 6px; padding-top: 6px; border-top: 1px dashed #e5e5e5; }' +
     '.kp-verdict-badge { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }' +
     '.transcript { border: 1px solid #e5e5e5; border-radius: 8px; padding: 12px 16px; margin-top: 8px; }' +
@@ -489,6 +537,7 @@ function exportPDF() {
     '</div>' +
     summaryHTML +
     keyPointsHTML +
+    dossierHTML +
     (sessionLog.length
       ? '<div class="summary">' +
           '<div class="summary-item"><span class="summary-count true">' + trueCount + '</span><span class="summary-label">True</span></div>' +

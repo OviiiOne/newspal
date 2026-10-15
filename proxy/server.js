@@ -507,6 +507,97 @@ function handleCerebras(body) {
   return handleOpenAICompat('cerebras', body);
 }
 
+// ── Web search (Mistral built-in web_search tool) ─────────────────────────────
+// Background context for an event: who is who, how names are spelled, what happened
+// recently. The tool only exists on the Conversations API, not on /chat/completions.
+// Every search the model runs is billed per call OUTSIDE the plan's free credit, and one
+// request may run several, so they are counted from the response and capped per month.
+// The cap comes from the client (a popup setting); this count is a second guard that
+// also covers several browsers, but it lives in memory and restarts with the service.
+const searchUsage = { month: '', count: 0 };
+
+function searchMonth() {
+  return new Date().toISOString().slice(0, 7); // "2026-10"
+}
+
+function searchesThisMonth() {
+  if (searchUsage.month !== searchMonth()) { searchUsage.month = searchMonth(); searchUsage.count = 0; }
+  return searchUsage.count;
+}
+
+// The model's answer arrives as entries; tool.execution entries are the billed searches,
+// and message.output carries text chunks interleaved with tool_reference chunks (sources).
+function parseConversation(raw) {
+  const outputs = Array.isArray(raw?.outputs) ? raw.outputs : [];
+  let searches = 0;
+  let text = '';
+  const sources = [];
+  for (const o of outputs) {
+    if (o?.type === 'tool.execution' && /^web_search/.test(o.name || '')) searches++;
+    if (o?.type !== 'message.output') continue;
+    const content = o.content;
+    if (typeof content === 'string') { text += content; continue; }
+    for (const c of (Array.isArray(content) ? content : [])) {
+      if (c?.type === 'text' && c.text) text += c.text;
+      if (c?.type === 'tool_reference' && /^https?:\/\//.test(c.url || '') && !sources.some(s => s.url === c.url)) {
+        sources.push({ url: c.url, title: c.title || '' });
+      }
+    }
+  }
+  return { searches, text: text.trim(), sources, model: outputs.find(o => o?.model)?.model || '' };
+}
+
+app.post('/search', async (req, res) => {
+  if (!MISTRAL_KEY) {
+    return res.status(400).json({ error: { message: 'MISTRAL_API_KEY not configured on the proxy' } });
+  }
+  const { query, instructions, limit, max_tokens } = req.body || {};
+  if (!query || typeof query !== 'string') {
+    return res.status(400).json({ error: { message: 'Missing query' } });
+  }
+  const cap = Number.isInteger(limit) && limit >= 0 ? limit : 30;
+  if (searchesThisMonth() >= cap) {
+    return res.status(429).json({ error: { message: `Monthly web search limit reached (${searchUsage.count}/${cap})` }, limitReached: true });
+  }
+
+  // Best chat model first, one more as a fallback. No parking here: a model refusing the
+  // Conversations API says nothing about how it does on /chat/completions.
+  const ranked = candidateModels('mistral', await rankedModels('mistral')).slice(0, 2);
+  let last = { status: 502, data: { error: { message: 'Mistral search: no model to try' } } };
+  try {
+    for (const model of ranked) {
+      const response = await fetch('https://api.mistral.ai/v1/conversations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + MISTRAL_KEY },
+        body: JSON.stringify({
+          model,
+          inputs: query,
+          instructions: instructions || '',
+          tools: [{ type: 'web_search' }],
+          completion_args: { temperature: 0, max_tokens: Math.min(max_tokens || 1500, 4096) },
+          store: false,
+          stream: false,
+        }),
+      });
+      const raw = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        last = { status: response.status, data: { error: { message: raw?.message || raw?.error?.message || ('Mistral HTTP ' + response.status) } } };
+        console.warn(`[search] ${model} failed (${response.status}): ${last.data.error.message}`);
+        continue;
+      }
+      const parsed = parseConversation(raw);
+      searchesThisMonth();
+      searchUsage.count += parsed.searches;
+      console.log(`[search] ${model}: ${parsed.searches} search(es), ${parsed.sources.length} source(s) — ${searchUsage.count}/${cap} this month`);
+      return res.json({ ...parsed, model: parsed.model || model, monthCount: searchUsage.count });
+    }
+    res.status(last.status).json(last.data);
+  } catch (err) {
+    console.error('Search proxy error:', err.message);
+    res.status(502).json({ error: { message: 'Proxy failed to reach Mistral' } });
+  }
+});
+
 app.post('/', async (req, res) => {
   const { messages, provider } = req.body;
 
@@ -592,7 +683,11 @@ app.get('/health', async (req, res) => {
     };
   }
   if (ANTHROPIC_KEY) providers.push('claude');
-  res.json({ status: 'ok', providers, models, gladia: !!GLADIA_KEY });
+  res.json({
+    status: 'ok', providers, models, gladia: !!GLADIA_KEY,
+    // Billed web searches since the last restart of this service, this month.
+    webSearch: MISTRAL_KEY ? { month: searchMonth(), searches: searchesThisMonth() } : null,
+  });
 });
 
 app.listen(PORT, () => {

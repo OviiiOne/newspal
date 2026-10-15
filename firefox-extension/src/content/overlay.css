@@ -565,6 +565,21 @@
   padding-left: 7px;
 }
 
+/* Web background: apart from the quote and in its own colour, never read as speech. */
+.rtfc-kp-context {
+  font-size: 11px;
+  color: #5eead4;
+  line-height: 1.45;
+  margin-top: 4px;
+}
+
+.rtfc-summary-sources {
+  margin-top: 8px;
+  font-size: 10px;
+  color: #b0b0b0;
+  align-items: baseline;
+}
+
 .rtfc-kp-actions {
   display: flex;
   gap: 6px;

@@ -302,7 +302,22 @@ function gladiaRetryMessage(status, n, total) {
   return fmt(t('ac_gladia_status_retrying'), { via, status, n, total });
 }
 
-async function requestGladiaSession(translate) {
+// Custom vocabulary: names Gladia should expect (the Participants plus the web dossier's).
+// It does not make Gladia hear better — it compares what it transcribed with the list by
+// SOUND and swaps in a close enough match — so a low intensity: only near sound-alikes
+// are replaced, and an unrelated word or an unlisted name is left as heard.
+const GLADIA_VOCABULARY_INTENSITY = 0.3;
+
+async function vocabularyForGladia() {
+  try {
+    const answer = await browser.runtime.sendMessage({ type: 'GET_VOCABULARY' });
+    return Array.isArray(answer && answer.names) ? answer.names : [];
+  } catch {
+    return [];
+  }
+}
+
+async function requestGladiaSession(translate, vocabulary) {
   // Direct (key in browser) or via proxy (key on server). Proxy forwards to Gladia.
   const initUrl = gladiaKey ? 'https://api.gladia.io/v2/live' : gladiaProxyUrl;
   const initHeaders = gladiaKey
@@ -342,6 +357,14 @@ async function requestGladiaSession(translate) {
       lipsync: false,
     };
   }
+  // Also INSIDE realtime_processing, and Gladia wants the flag and the config together.
+  if (vocabulary && vocabulary.length) {
+    body.realtime_processing.custom_vocabulary = true;
+    body.realtime_processing.custom_vocabulary_config = {
+      vocabulary,
+      default_intensity: GLADIA_VOCABULARY_INTENSITY,
+    };
+  }
 
   return fetch(initUrl, {
     method: 'POST',
@@ -360,12 +383,14 @@ async function connectGladia() {
     let detail = '';
     let lastStatus = 0;
     const translate = wantsGladiaTranslation();
+    let vocabulary = await vocabularyForGladia();
+    if (vocabulary.length) console.log('[gladia] custom vocabulary:', vocabulary.join(', '));
 
     for (let attempt = 0; attempt <= GLADIA_INIT_RETRY_DELAYS.length; attempt++) {
       if (!captureActive) return; // stopped while we were waiting
       detail = '';
       try {
-        const res = await requestGladiaSession(translate);
+        const res = await requestGladiaSession(translate, vocabulary);
         if (res.ok) { initRes = res; break; }
         lastStatus = res.status;
         // Our proxy's own errors are { error: { message } }; Gladia's are { message,
@@ -376,6 +401,14 @@ async function connectGladia() {
           detail = (e && e.error && e.error.message) || [e && e.message, validation].filter(Boolean).join(' — ') || '';
         } catch {}
         console.error('[gladia] init failed:', res.status, detail, 'attempt', attempt + 1);
+        // The vocabulary is the new, untested part of the request: if Gladia refuses the
+        // request, try once more without it rather than lose the whole transcription.
+        if (gladiaInitIsFatal(res.status) && vocabulary.length) {
+          console.warn('[gladia] refused with the custom vocabulary — retrying without it');
+          vocabulary = [];
+          attempt--;
+          continue;
+        }
         if (gladiaInitIsFatal(res.status)) break;
       } catch (err) {
         lastStatus = 0;

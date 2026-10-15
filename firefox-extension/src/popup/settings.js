@@ -386,6 +386,46 @@ browser.storage.onChanged.addListener((changes, area) => {
   if (changes.uiLanguage) renderProxyStatus();
 });
 
+// ── Web search limit ──────────────────────────────────────────────────────────
+// Each web search for the event's background is billed per call, outside the free
+// credit, so there is a monthly cap; 0 turns the searches off. The background counts the
+// searches (storage `webSearchUsage`) and stops at the cap. Keep the default in sync with
+// WEB_SEARCH_DEFAULT_LIMIT in background.js.
+const WEB_SEARCH_DEFAULT_LIMIT = 30;
+const webSearchLimitEl = document.getElementById('webSearchLimit');
+const webSearchUsageEl = document.getElementById('webSearchUsage');
+let webSearch = { limit: WEB_SEARCH_DEFAULT_LIMIT, usage: null };
+
+function renderWebSearchUsage() {
+  const month = new Date().toISOString().slice(0, 7);
+  const u = webSearch.usage;
+  const used = (u && u.month === month && Number.isInteger(u.count)) ? u.count : 0;
+  webSearchUsageEl.textContent = webSearch.limit > 0
+    ? fmt(t('p_web_search_usage'), { used, limit: webSearch.limit })
+    : t('p_web_search_off');
+}
+
+browser.storage.local.get(['webSearchLimit', 'webSearchUsage']).then(d => {
+  webSearch.limit = Number.isInteger(d.webSearchLimit) ? d.webSearchLimit : WEB_SEARCH_DEFAULT_LIMIT;
+  webSearch.usage = d.webSearchUsage || null;
+  webSearchLimitEl.value = String(webSearch.limit);
+  renderWebSearchUsage();
+});
+
+webSearchLimitEl.addEventListener('input', () => {
+  const n = parseInt(webSearchLimitEl.value, 10);
+  if (!Number.isInteger(n) || n < 0) return; // half-typed: keep the last valid value
+  webSearch.limit = Math.min(n, 1000);
+  browser.storage.local.set({ webSearchLimit: webSearch.limit });
+  renderWebSearchUsage();
+});
+
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local') return;
+  if (changes.webSearchUsage) { webSearch.usage = changes.webSearchUsage.newValue || null; renderWebSearchUsage(); }
+  if (changes.uiLanguage) renderWebSearchUsage();
+});
+
 // ── Backup ────────────────────────────────────────────────────────────────────
 // Export/import live in their own window (backup.html): Firefox closes the browser-action
 // popup the moment a file picker opens, which killed the import mid-flight. Settings are

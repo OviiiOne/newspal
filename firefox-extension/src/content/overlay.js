@@ -881,6 +881,12 @@ function buildKeyPointCard(kp) {
   const quoteHTML = kp.quote
     ? '<p class="rtfc-kp-quote">“' + escapeHtml(kp.quote) + '”</p>'
     : '';
+  // Background from the web dossier: on its own line and marked, so it never reads as
+  // something the speaker said.
+  const contextHTML = kp.context
+    ? '<p class="rtfc-kp-context" title="' + escapeHtml(t('ov_kp_context_title')) + '">🌐 ' +
+      escapeHtml(t('ov_kp_context')) + ': ' + escapeHtml(kp.context) + '</p>'
+    : '';
 
   // The exact model is on hover: the card has no room, but it answers "which Mistral?".
   const modelTag = kp.model
@@ -897,6 +903,7 @@ function buildKeyPointCard(kp) {
     '</div>',
     '<p class="rtfc-kp-point">' + escapeHtml(kp.point) + '</p>',
     quoteHTML,
+    contextHTML,
     '<div class="rtfc-kp-actions">',
       // Verification needs live web search, which doesn't work on the Groq free tier
       // (returns 413). Disabled for now; re-enable when a search-capable provider is set.
@@ -1099,6 +1106,7 @@ function renderRestoredSession(data) {
       category: entry.category,
       point: entry.point,
       quote: entry.quote || '',
+      context: entry.context || '',
       speaker: entry.speaker || null,
       model: entry.model || '',
     };
@@ -1114,7 +1122,7 @@ function renderRestoredSession(data) {
     }
   });
 
-  if (data.summary) renderSummary(data.summary, '', '');
+  if (data.summary) renderSummary(data.summary, '', '', data.summarySources || [], true);
 }
 
 function applyKeyPointVerdict(id, result) {
@@ -1176,7 +1184,7 @@ function generateSummary() {
   browser.runtime.sendMessage({ type: 'SUMMARIZE', input });
 }
 
-function renderSummary(text, provider, modelId) {
+function renderSummary(text, provider, modelId, sources, restored) {
   if (!summaryEl) return;
   summaryEl.style.display = '';
   const title = '<div class="rtfc-summary-title">' + escapeHtml(t('ov_summary_title')) + '</div>';
@@ -1189,7 +1197,25 @@ function renderSummary(text, provider, modelId) {
   body.className = 'rtfc-summary-body';
   body.textContent = text;
   summaryEl.appendChild(body);
-  if (typeof setSummary === 'function') setSummary(text, provider, modelId);
+  // Web sources of the background woven into the summary, as links below it.
+  const links = (sources || []).filter(s => s && /^https?:\/\//.test(s.url || ''));
+  if (links.length) {
+    const box = document.createElement('div');
+    box.className = 'rtfc-sources rtfc-summary-sources';
+    box.appendChild(document.createTextNode('🌐 ' + t('ov_web_sources') + ': '));
+    links.forEach((s, i) => {
+      const a = document.createElement('a');
+      a.href = s.url;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.textContent = s.title || (t('ov_source') + ' ' + (i + 1));
+      box.appendChild(a);
+    });
+    summaryEl.appendChild(box);
+  }
+  // A restored summary is already in the log, model and sources included; logging it
+  // again here would wipe both (the restore has no provider to pass).
+  if (!restored && typeof setSummary === 'function') setSummary(text, provider, modelId, links);
 }
 
 // Participants bar: shows current participants and lets the user add more live
@@ -1630,6 +1656,12 @@ browser.runtime.onMessage.addListener((msg) => {
       break;
     }
 
+    // The web dossier is ready (or refreshed): kept for the export, as evidence of what
+    // the AI was given as background and where it came from.
+    case 'DOSSIER':
+      if (msg.dossier && typeof setDossier === 'function') setDossier(msg.dossier);
+      break;
+
     case 'NEW_KEYPOINTS':
       if (msg.results) {
         for (const kp of msg.results) addKeyPoint(kp);
@@ -1645,7 +1677,7 @@ browser.runtime.onMessage.addListener((msg) => {
       break;
 
     case 'SUMMARY_RESULT':
-      renderSummary(msg.text || '', msg.provider || '', msg.modelId || '');
+      renderSummary(msg.text || '', msg.provider || '', msg.modelId || '', msg.sources || []);
       // The user asked to close WITH a summary: it's in the log now, so export and go.
       if (closeAfterSummary) finishCloseWithSummary();
       break;

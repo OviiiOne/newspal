@@ -164,7 +164,13 @@ Return ONLY a JSON array. No markdown, no explanation outside the array.`;
 // Bilingual edition: the prompts are built on demand so the output language (and the
 // category codes) follow the `uiLanguage` setting. promptLang() comes from lang.js.
 
-function keypointsPrompt() {
+// With a web dossier the key point may carry one line of background, which the card shows
+// apart from the point. It may come ONLY from that block — without one, no such field.
+function backgroundRule(L) {
+  return `\n\nBACKGROUND BLOCK: the request may include background from a web search. It was NOT said at the event. Use it ONLY to spell names and titles correctly and to understand what a speaker refers to — never as a source of key points or quotes. Add to each point a "context" field: ONE short sentence in ${L.name.toUpperCase()} taken from that block that helps a reader understand the point (who someone is, which earlier event is meant), or "" when the block has nothing relevant. Never use your own knowledge for "context".`;
+}
+
+function keypointsPrompt(withBackground) {
   const L = promptLang();
   return `You are following a live press conference or political statement. From the transcript excerpt, extract the noteworthy KEY POINTS: announcements, figures/statistics, commitments or promises, factual claims, geopolitical and foreign-policy positions, statements about conflicts or security, accusations, threats, denials, named decisions, and important verbatim quotes.
 
@@ -186,7 +192,7 @@ Return ONLY a JSON object of the form {"points": [ ... ]} (no markdown, no text 
 - "quote": the most relevant short verbatim fragment from the transcript, in its ORIGINAL language (or "" if none)
 - "speaker": who said it, using a real name when known; never "Speaker N"; null if unknown
 
-If nothing is noteworthy, return {"points": []}.`;
+If nothing is noteworthy, return {"points": []}.${withBackground ? backgroundRule(L) : ''}`;
 }
 
 // What a translation must carry over untouched. A small model "localises" otherwise: it
@@ -241,6 +247,8 @@ COVER THE WHOLE EVENT: the key points may cover only part of it — use the tran
 
 LENGTH FOLLOWS THE INPUT: one short paragraph for a short or thin input, up to four for a long event. Never pad: do NOT add background, history, motives or analysis that is not in the input — if little was said, write little.
 
+BACKGROUND: the input may end with BACKGROUND FROM A WEB SEARCH. It was NOT said at the event. Use it to get names, titles and the current state of affairs right, and where it really helps understanding, weave a brief clause of it into the prose (e.g. who someone is, what an earlier decision was) — worded so it reads as context, never attributed to a speaker. It must not make the summary longer: a few words here and there, never a paragraph of its own. Nothing from your own knowledge.
+
 The transcript comes from automatic speech recognition and may contain misheard words or a phrase that doesn't belong. If a word makes no sense in context, leave it out rather than build on it or guess what was meant.
 
 You may also get a MACHINE TRANSLATION of the transcript. It is only a reading aid and can be wrong. Use it to understand the original and to read a name that speech recognition garbled. DATES, NUMBERS and FIGURES come only from the original transcript: never take a month, year or figure that appears only in the translation. When the two disagree on anything else, prefer the original.
@@ -270,9 +278,9 @@ Produce an UPDATED list of AT MOST 8 rules, each ONE short imperative sentence I
 Return ONLY a JSON object of the form {"rules": ["...", "..."]} — no markdown, no text outside the JSON.`;
 }
 
-function manualKeypointPrompt() {
+function manualKeypointPrompt(withBackground) {
   const L = promptLang();
-  return `The user manually marked this transcript fragment as important. Turn it into EXACTLY ONE key point. You may be given PRECEDING TRANSCRIPT and a list of participants: use them ONLY to tell who is speaking and to understand what the fragment refers to — summarize ONLY the marked fragment, NEVER the context. If the fragment is ONE statement, summarize it whole, from its first sentence to its last — do not drop the beginning or keep only the ending. If it contains SEVERAL distinct statements (the user selected a long passage), summarize the most newsworthy one instead of blending them all together. Return ONLY a JSON object: {"point": "<concise neutral one-sentence summary in ${L.name.toUpperCase()} covering the entire fragment>", "category": "<one of ${L.cats}, or a short ${L.name} label>", "quote": "<the FULL fragment in its original language>", "speaker": "<who said the fragment: follow the Participants rule given in the user message — use the EXACT participant name, or ${L.otherSpeaker} for anyone not listed, or null if truly impossible to tell>"}. No text outside the JSON.`;
+  return (withBackground ? backgroundRule(L).trim() + '\n\n' : '') + `The user manually marked this transcript fragment as important. Turn it into EXACTLY ONE key point. You may be given PRECEDING TRANSCRIPT and a list of participants: use them ONLY to tell who is speaking and to understand what the fragment refers to — summarize ONLY the marked fragment, NEVER the context. If the fragment is ONE statement, summarize it whole, from its first sentence to its last — do not drop the beginning or keep only the ending. If it contains SEVERAL distinct statements (the user selected a long passage), summarize the most newsworthy one instead of blending them all together. Return ONLY a JSON object: {"point": "<concise neutral one-sentence summary in ${L.name.toUpperCase()} covering the entire fragment>", "category": "<one of ${L.cats}, or a short ${L.name} label>", "quote": "<the FULL fragment in its original language>", "speaker": "<who said the fragment: follow the Participants rule given in the user message — use the EXACT participant name, or ${L.otherSpeaker} for anyone not listed, or null if truly impossible to tell>"}. No text outside the JSON.`;
 }
 
 // ── Speaker parsing ──────────────────────────────────────────────────────────
@@ -921,9 +929,10 @@ async function extractKeyPoints(contextText, title, lexicalSummary, lexicalSnaps
       feedbackCtx += `\n\nThe user marked these as important — prioritise anything similar:\n- ${POS_EXAMPLES.slice(-15).join('\n- ')}`;
     }
 
+    const background = dossierBlock();
     const answer = await callClaude(
-      `${titleContext}Transcript: "${contextText}"${alreadyNoted}${feedbackCtx}`,
-      keypointsPrompt(),
+      `${titleContext}Transcript: "${contextText}"${alreadyNoted}${feedbackCtx}${background}`,
+      keypointsPrompt(!!background),
       false, 2048, true, true
     );
     const raw = answer.text;
@@ -957,6 +966,7 @@ async function extractKeyPoints(contextText, title, lexicalSummary, lexicalSnaps
           point: r.point,
           category: (r.category || promptLang().catOther).toUpperCase(),
           quote: r.quote || '',
+          context: background ? backgroundLine(r.context) : '',
           speaker: dominantSpeaker
             || (r.speaker && !String(r.speaker).match(/^Speaker\s*\d+$/i) ? r.speaker : null),
           dominantSpeakerId,
@@ -987,13 +997,14 @@ async function addManualKeyPoint(text, speaker, context, timecode) {
     const contextBlock = (context && context.trim())
       ? `Preceding transcript (CONTEXT ONLY — do NOT summarize this; use it to tell who is speaking and what the fragment refers to):\n"${context.trim()}"\n\n`
       : '';
+    const background = dossierBlock();
     const answer = await callClaude(
-      `${titleContext}${contextBlock}Fragment to turn into a key point: "${text}"`,
-      manualKeypointPrompt(), false, 512, true
+      `${titleContext}${contextBlock}Fragment to turn into a key point: "${text}"${background}`,
+      manualKeypointPrompt(!!background), false, 512, true
     );
     const kp = parseObject(answer.text);
     const result = (kp && kp.point)
-      ? { point: kp.point, category: (kp.category || catOther).toUpperCase(), quote: kp.quote || text, speaker: spk || kp.speaker || null, dominantSpeakerId: null, model: activeProvider, modelId: answer.model, timecode: tc }
+      ? { point: kp.point, category: (kp.category || catOther).toUpperCase(), quote: kp.quote || text, context: background ? backgroundLine(kp.context) : '', speaker: spk || kp.speaker || null, dominantSpeakerId: null, model: activeProvider, modelId: answer.model, timecode: tc }
       : { point: text, category: catOther, quote: text, speaker: spk, dominantSpeakerId: null, model: activeProvider, modelId: answer.model, timecode: tc };
     rememberClaim(result.point);
     if (activeTabId) sendToTab(activeTabId, { type: 'NEW_KEYPOINTS', results: [result] });
@@ -1042,16 +1053,207 @@ async function verifyKeyPoint(id, claim, quote) {
 
 async function summarizeSession(input) {
   try {
-    const { text, model } = await callClaude(input, summaryPrompt(), false, 2048);
+    const background = dossierBlock();
+    const { text, model } = await callClaude(input + background, summaryPrompt(), false, 2048);
     if (activeTabId) {
       sendToTab(activeTabId, {
         type: 'SUMMARY_RESULT', text: stripMarkdown(text), provider: activeProvider, modelId: model,
+        // The background is blended into the prose, so its sources go below it as links.
+        sources: (text && background) ? dossier.sources : [],
       });
     }
   } catch (err) {
     console.error('[summary] error:', err);
     if (activeTabId) sendToTab(activeTabId, { type: 'SUMMARY_RESULT', text: '' });
   }
+}
+
+// ── Web context (dossier) ─────────────────────────────────────────────────────
+// The models know nothing recent, so names come out misspelled and summaries outdated.
+// A web search (Mistral's tool, through the proxy) builds a short background dossier at
+// the start of the event — who is who, how names are written, what happened lately — and
+// once more halfway through a long one. Key points and the summary REUSE it: each search
+// is billed per call outside the free credit, so they are few, counted and capped per
+// month (popup setting `webSearchLimit`, 0 = off). The dossier is never transcript: the
+// prompts get it in a block of its own, labelled as background.
+const WEB_SEARCH_DEFAULT_LIMIT = 30;
+const DOSSIER_REFRESH_MS = 40 * 60 * 1000; // the one refresh, for events that last
+const VOCABULARY_WAIT_MS = 10000;          // how long Gladia's start waits for the names
+const VOCABULARY_MAX = 20;                 // long lists make Gladia swap more words wrongly
+
+let dossier = null;        // { names: [{name, role}], background, sources: [{url, title}], searches, model, at }
+let dossierPromise = null;
+let dossierSessionId = null;
+let dossierRefreshTimer = null;
+let searchLimitNoticed = false;
+
+function resetDossier() {
+  dossier = null;
+  dossierPromise = null;
+  dossierSessionId = null;
+  searchLimitNoticed = false;
+  clearTimeout(dossierRefreshTimer);
+  dossierRefreshTimer = null;
+}
+
+function dossierPrompt() {
+  const L = promptLang();
+  return `You prepare a short background brief for a journalist who is about to follow a live event. Search the web for it — ONE search, two at most — and use ONLY what the search results say, never your own knowledge, which may be out of date.
+
+Return ONLY a JSON object (no markdown, no text outside it):
+{"names": [{"name": "<full name as written in the results>", "role": "<current role or title, as the results state it>"}], "background": "<the context, in ${L.name.toUpperCase()}>"}
+
+- "names": the people most likely to speak or be mentioned at this event, at most 12, spelled exactly as reliable sources write them in Latin script.
+- "background": at most 120 words of plain neutral prose: what the event is about and the recent facts behind it, with dates. No opinions, no predictions.
+- If the results say nothing useful about this event, return {"names": [], "background": ""}.`;
+}
+
+function monthKey() {
+  return new Date().toISOString().slice(0, 7);
+}
+
+// Usage lives in storage so it survives a browser restart; the month key resets it.
+async function webSearchBudget() {
+  const d = await browser.storage.local.get(['webSearchLimit', 'webSearchUsage']);
+  const limit = Number.isInteger(d.webSearchLimit) ? d.webSearchLimit : WEB_SEARCH_DEFAULT_LIMIT;
+  const u = d.webSearchUsage;
+  const used = (u && u.month === monthKey() && Number.isInteger(u.count)) ? u.count : 0;
+  return { limit, used };
+}
+
+async function addWebSearches(n) {
+  if (!n) return;
+  const { used } = await webSearchBudget();
+  await browser.storage.local.set({ webSearchUsage: { month: monthKey(), count: used + n } });
+}
+
+// One call to the proxy's /search. Returns its answer, or null when off, over the limit,
+// or failed. Never throws: a dossier is a bonus, the session must not depend on it.
+async function webSearch(query) {
+  if (!PROXY_URL) return null;
+  const { limit, used } = await webSearchBudget();
+  if (limit <= 0) return null;
+  if (used >= limit) {
+    console.log(`[dossier] monthly web search limit reached (${used}/${limit}) — no search`);
+    if (!searchLimitNoticed && activeTabId) {
+      searchLimitNoticed = true;
+      sendToTab(activeTabId, { type: 'PIPELINE_INFO', message: fmt(t('bg_search_limit'), { used, limit }) });
+    }
+    return null;
+  }
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (PROXY_TOKEN) headers['x-proxy-token'] = PROXY_TOKEN;
+    const res = await fetch(new URL('/search', PROXY_URL).href, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ query, instructions: dossierPrompt(), limit, max_tokens: 1500 }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) {
+      console.warn('[dossier] search failed:', data.error?.message || ('HTTP ' + res.status));
+      return null;
+    }
+    await addWebSearches(data.searches || 0);
+    return data;
+  } catch (err) {
+    console.warn('[dossier] search threw:', err.message);
+    return null;
+  }
+}
+
+function dossierQuery(topics) {
+  const parts = [`Event: "${pageTitle || ''}"`, `Date and time, happening live right now: ${clockDateTime(sessionStartedAt)}`];
+  if (PARTICIPANTS) parts.push(`Participants: ${PARTICIPANTS}`);
+  if (topics && topics.length) parts.push(`Topics raised so far:\n- ${topics.join('\n- ')}`);
+  return parts.join('\n');
+}
+
+// Builds (or, with topics, refreshes) the dossier. Only an answer that really searched
+// counts: without a search it would be the model's own frozen knowledge in disguise.
+async function buildDossier(topics) {
+  const data = await webSearch(dossierQuery(topics));
+  if (!data || !data.searches) {
+    if (data) console.warn('[dossier] the model answered without searching — discarded');
+    return;
+  }
+  const obj = parseObject(data.text || '');
+  const names = (obj && Array.isArray(obj.names) ? obj.names : [])
+    .filter(n => n && typeof n.name === 'string' && n.name.trim())
+    .map(n => ({ name: n.name.trim(), role: typeof n.role === 'string' ? n.role.trim() : '' }))
+    .slice(0, 12);
+  const background = obj && typeof obj.background === 'string' ? stripMarkdown(obj.background.trim()) : '';
+  if (!names.length && !background) {
+    console.log('[dossier] the search found nothing useful about this event');
+    return;
+  }
+  const prev = dossier;
+  // A refresh adds to the first dossier rather than replacing who-is-who already known.
+  const merged = prev ? [...prev.names, ...names.filter(n => !prev.names.some(p => p.name.toLowerCase() === n.name.toLowerCase()))] : names;
+  const sources = prev ? [...prev.sources, ...data.sources.filter(s => !prev.sources.some(p => p.url === s.url))] : data.sources;
+  dossier = {
+    names: merged.slice(0, 16),
+    background: prev && background ? prev.background + '\n' + background : (background || (prev ? prev.background : '')),
+    sources: (sources || []).slice(0, 10),
+    searches: (prev ? prev.searches : 0) + data.searches,
+    model: data.model || '',
+    at: Date.now(),
+  };
+  console.log(`[dossier] ${topics ? 'refreshed' : 'ready'}: ${dossier.names.length} names, ${dossier.sources.length} sources, ${dossier.searches} search(es) via ${dossier.model}`);
+  if (activeTabId) {
+    sendToTab(activeTabId, { type: 'DOSSIER', dossier });
+    sendToTab(activeTabId, {
+      type: 'PIPELINE_INFO',
+      message: fmt(t(topics ? 'bg_dossier_refreshed' : 'bg_dossier_ready'), { names: dossier.names.length, sources: dossier.sources.length }),
+    });
+  }
+}
+
+// Once per session, when the page title arrives (a reload of the same session keeps it).
+function startDossier() {
+  if (!isCapturing || dossierSessionId === sessionId) return;
+  dossierSessionId = sessionId;
+  dossierPromise = buildDossier(null).catch(err => console.warn('[dossier] error:', err.message));
+  clearTimeout(dossierRefreshTimer);
+  dossierRefreshTimer = setTimeout(() => {
+    if (!isCapturing || dossierSessionId !== sessionId) return;
+    const topics = [...recentClaims.values()]
+      .filter(v => Array.isArray(v) && v[1]).map(v => v[1]).slice(-8);
+    if (topics.length) buildDossier(topics).catch(err => console.warn('[dossier] refresh error:', err.message));
+  }, DOSSIER_REFRESH_MS);
+}
+
+// Names for Gladia's custom vocabulary: the Participants first, then the dossier's.
+// Waits a little for the first dossier, never long — the transcription must start.
+async function vocabularyNames() {
+  if (dossierPromise && !dossier) {
+    await Promise.race([dossierPromise, new Promise(r => setTimeout(r, VOCABULARY_WAIT_MS))]);
+  }
+  const names = PARTICIPANTS ? PARTICIPANTS.split(',').map(s => s.trim()).filter(Boolean) : [];
+  for (const n of (dossier ? dossier.names : [])) {
+    if (!names.some(x => x.toLowerCase() === n.name.toLowerCase())) names.push(n.name);
+  }
+  return names.slice(0, VOCABULARY_MAX);
+}
+
+// A key point's background line, capped in code: the prompt asks for one short sentence,
+// and a model that writes a paragraph would bury the card.
+const BACKGROUND_LINE_MAX = 220;
+
+function backgroundLine(text) {
+  const s = stripMarkdown(typeof text === 'string' ? text : '').replace(/\s+/g, ' ').trim();
+  if (s.length <= BACKGROUND_LINE_MAX) return s;
+  const cut = s.slice(0, BACKGROUND_LINE_MAX);
+  return cut.slice(0, Math.max(cut.lastIndexOf(' '), BACKGROUND_LINE_MAX / 2)) + '…';
+}
+
+// The dossier as a prompt block, kept apart from the transcript and labelled as such.
+function dossierBlock() {
+  if (!dossier) return '';
+  const who = dossier.names.map(n => n.role ? `${n.name} (${n.role})` : n.name).join('; ');
+  return `\n\nBACKGROUND FROM A WEB SEARCH (${clockDateTime(dossier.at)}) — this was NOT said at the event:` +
+    (who ? `\nPeople: ${who}` : '') +
+    (dossier.background ? `\n${dossier.background}` : '');
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -1671,7 +1873,12 @@ browser.runtime.onMessage.addListener((msg, sender) => {
     case 'PAGE_TITLE':
       pageTitle = msg.title || '';
       pageDate = msg.date || '';
+      startDossier();
       return Promise.resolve();
+
+    // Gladia's session start asks for the names to put in its custom vocabulary.
+    case 'GET_VOCABULARY':
+      return vocabularyNames().then(names => ({ names }));
 
     case 'PIPELINE_ERROR':
       if (activeTabId) sendToTab(activeTabId, { type: 'PIPELINE_ERROR', message: msg.message });
@@ -1893,6 +2100,7 @@ async function startFactCheck() {
   resetGladiaTranslation();
   resetInterpretationIndex();
   resetSlate();
+  resetDossier();
 
   await sendToTab(activeTabId, { type: 'START_FACTCHECK', sessionId, resume: false });
   return { ok: true };
@@ -1920,6 +2128,7 @@ function stopFactCheck() {
   resetGladiaTranslation();
   resetInterpretationIndex();
   resetSlate();
+  resetDossier();
   isCapturing = false;
 }
 
