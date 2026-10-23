@@ -461,6 +461,7 @@ async function connectGladia() {
     socket.onopen = () => {
       socketOpened = true;
       gladiaSocketFailures = 0;
+      gladiaAudioSentS = 0; // a new session starts its clock at zero
       console.log('[audio-capture] gladia connected');
       browser.runtime.sendMessage({ type: 'CAPTURE_READY' });
       browser.runtime.sendMessage({ type: 'PIPELINE_INFO', message: t('ac_connected') });
@@ -481,6 +482,11 @@ async function connectGladia() {
 
           const isFinal = msg.data?.is_final === true;
           const speaker = msg.data?.utterance?.words?.[0]?.speaker ?? null;
+          // How long after the words were spoken the final line arrived, in seconds.
+          const end = msg.data?.utterance?.end;
+          const lagS = (isFinal && typeof end === 'number')
+            ? Math.round(Math.max(0, gladiaAudioSentS - end) * 10) / 10 : null;
+          if (lagS !== null) console.log(`[gladia] final line ${lagS} s after it was spoken`);
 
           browser.runtime.sendMessage({
             type: 'TRANSCRIPT_RESULT',
@@ -495,6 +501,7 @@ async function connectGladia() {
             utteranceId: msg.data?.id ?? null,
             start: msg.data?.utterance?.start ?? null,
             end: msg.data?.utterance?.end ?? null,
+            lagS,
           });
         } else if (msg.type === 'translation') {
           const d = msg.data || {};
@@ -562,6 +569,9 @@ let gladiaKeepalive = null;
 let gladiaWatchdog = null;
 let lastChunkSentAt = 0;
 let SILENT_CHUNK = null; // 100ms of silence, precomputed
+// Seconds of audio sent on the current Gladia session — Gladia's own clock, which its
+// utterance times count from. Audio sent past an utterance's end = how late its line is.
+let gladiaAudioSentS = 0;
 
 // ── Silence watchdog ─────────────────────────────────────────────────────────
 // A capture can connect to Gladia and still carry nothing: Firefox hands Web Audio pure
@@ -634,6 +644,7 @@ function startGladiaPipeline() {
     // Gladia v2 live expects this exact shape for streamed audio.
     socket.send(JSON.stringify({ type: 'audio_chunk', data: { chunk: base64 } }));
     lastChunkSentAt = Date.now();
+    gladiaAudioSentS += int16.length / WHISPER_SAMPLE_RATE;
   };
 
   gladiaSource.connect(gladiaProcessor);
@@ -650,6 +661,7 @@ function startGladiaPipeline() {
     if (Date.now() - lastChunkSentAt < 1500) return;
     socket.send(JSON.stringify({ type: 'audio_chunk', data: { chunk: silentChunkBase64() } }));
     lastChunkSentAt = Date.now();
+    gladiaAudioSentS += 0.1;
   }, 1000);
 
   // Watchdog: some players KILL their captured track when they rebuffer or switch

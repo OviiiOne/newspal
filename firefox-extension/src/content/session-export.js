@@ -89,10 +89,12 @@ function logVerdict(result) {
 
 // Full session transcript, each line tagged with its clock timecode HH:MM:SS:FF.
 // `lineId` lets a translation that arrives later attach itself to its line.
-function logTranscript(timecode, text, translation, speaker, lineId) {
+// `lagS`: seconds between the end of what was said and the line arriving (Gladia only).
+function logTranscript(timecode, text, translation, speaker, lineId, lagS) {
   transcriptLog.push({
     timecode, text, translation: translation || '', speaker: speaker || null,
     lineId: lineId || null, translationSource: '',
+    lagS: typeof lagS === 'number' ? lagS : null,
   });
   persistSession();
 }
@@ -401,6 +403,15 @@ function exportPDF() {
       webSourcesHTML(sessionSummarySources) + '</div>'
     : '';
 
+  // How late the transcription ran: measured per line, so a "it felt slow" can be checked.
+  const lags = transcriptLog.map(x => x.lagS).filter(x => typeof x === 'number');
+  const lagHTML = lags.length
+    ? '<span>⏱ ' + escapeHtml(fmt(t('ex_lag'), {
+        avg: (lags.reduce((a, b) => a + b, 0) / lags.length).toFixed(1),
+        max: Math.max(...lags).toFixed(1),
+      })) + '</span>'
+    : '';
+
   // What the AI was given as web background, and from where — so a name or a fact in the
   // summary can be traced back to a search rather than to the event.
   const dossierHTML = sessionDossier
@@ -533,6 +544,7 @@ function exportPDF() {
         // Key points, not the old fact-check claims: sessionLog is no longer fed, so that
         // count was always 0.
         '<span>📋 ' + escapeHtml(fmt(t('ex_kp_count'), { n: keyPointsLog.length })) + '</span>' +
+        lagHTML +
       '</div>' +
     '</div>' +
     summaryHTML +

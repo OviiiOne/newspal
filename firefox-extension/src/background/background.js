@@ -167,7 +167,7 @@ Return ONLY a JSON array. No markdown, no explanation outside the array.`;
 // With a web dossier the key point may carry one line of background, which the card shows
 // apart from the point. It may come ONLY from that block — without one, no such field.
 function backgroundRule(L) {
-  return `\n\nBACKGROUND BLOCK: the request may include background from a web search. It was NOT said at the event. Use it ONLY to spell names and titles correctly and to understand what a speaker refers to — never as a source of key points or quotes. Add to each point a "context" field: ONE short sentence in ${L.name.toUpperCase()} taken from that block that helps a reader understand the point (who someone is, which earlier event is meant), or "" when the block has nothing relevant. Never use your own knowledge for "context".`;
+  return `\n\nBACKGROUND BLOCK: the request may include background from a web search. It was NOT said at the event. Use it ONLY to spell names and titles correctly and to understand what a speaker refers to — never as a source of key points or quotes. Add to each point a "context" field: ONE short sentence in ${L.name.toUpperCase()} taken from that block that explains something IN THIS POINT a reader may not know — a person, place, decision or earlier event it mentions. NEVER say who the speaker is or what office they hold, nor anything a news reader already knows; never repeat a context given for an earlier point. Most points need none: then "". Never use your own knowledge for "context".`;
 }
 
 function keypointsPrompt(withBackground) {
@@ -625,6 +625,7 @@ let windowLexical = { rates: { hedging: 0, certainty: 0, filler: 0, emotional: 0
 let windowStartTime = null;
 let pageTitle = '';
 let pageDate = '';
+let pageDescription = ''; // the event's own title and description, when the page shows them
 let sessionStartedAt = null; // when HE pressed Start — the date the prompts get
 let currentSpeakerId = null;
 let lastSpeakerId = null;
@@ -1076,35 +1077,50 @@ async function summarizeSession(input) {
 // is billed per call outside the free credit, so they are few, counted and capped per
 // month (popup setting `webSearchLimit`, 0 = off). The dossier is never transcript: the
 // prompts get it in a block of its own, labelled as background.
+// The first search waits for ~3 minutes of transcript: a search made from the page alone
+// had nothing to go on (a Reuters page is titled "Live videos | Reuters Connect") and came
+// back with two names and filler, while the transcript was full of names and topics.
 const WEB_SEARCH_DEFAULT_LIMIT = 30;
-const DOSSIER_REFRESH_MS = 40 * 60 * 1000; // the one refresh, for events that last
-const VOCABULARY_WAIT_MS = 10000;          // how long Gladia's start waits for the names
+const DOSSIER_AFTER_MS = 3 * 60 * 1000;    // of transcript, before the first search
+const DOSSIER_REFRESH_MS = 40 * 60 * 1000; // after it: the one refresh, for long events
+const DOSSIER_TRANSCRIPT_CHARS = 4000;     // of what was said, sent along with the query
 const VOCABULARY_MAX = 20;                 // long lists make Gladia swap more words wrongly
 
 let dossier = null;        // { names: [{name, role}], background, sources: [{url, title}], searches, model, at }
-let dossierPromise = null;
 let dossierSessionId = null;
 let dossierRefreshTimer = null;
+let dossierFirstLineAt = 0;
+let dossierTranscript = '';
 let searchLimitNoticed = false;
 
 function resetDossier() {
   dossier = null;
-  dossierPromise = null;
   dossierSessionId = null;
+  dossierFirstLineAt = 0;
+  dossierTranscript = '';
+  backgroundLinesShown = [];
   searchLimitNoticed = false;
   clearTimeout(dossierRefreshTimer);
   dossierRefreshTimer = null;
 }
 
+// Every final line until the first search: what it is built from.
+function noteLineForDossier(text) {
+  if (!isCapturing || dossierSessionId === sessionId) return;
+  if (!dossierFirstLineAt) dossierFirstLineAt = Date.now();
+  if (dossierTranscript.length < DOSSIER_TRANSCRIPT_CHARS) dossierTranscript += (dossierTranscript ? ' ' : '') + text;
+  if (Date.now() - dossierFirstLineAt >= DOSSIER_AFTER_MS) startDossier();
+}
+
 function dossierPrompt() {
   const L = promptLang();
-  return `You prepare a short background brief for a journalist who is about to follow a live event. Search the web for it — ONE search, two at most — and use ONLY what the search results say, never your own knowledge, which may be out of date.
+  return `You prepare a short background brief for a journalist following a live event. You get the page it is on and the first minutes of its transcript (automatic speech recognition: names may be misheard). From the transcript, pick the people and topics that matter, then search the web for them — ONE search, two at most — and use ONLY what the search results say, never your own knowledge, which may be out of date.
 
 Return ONLY a JSON object (no markdown, no text outside it):
 {"names": [{"name": "<full name as written in the results>", "role": "<current role or title, as the results state it>"}], "background": "<the context, in ${L.name.toUpperCase()}>"}
 
-- "names": the people most likely to speak or be mentioned at this event, at most 12, spelled exactly as reliable sources write them in Latin script.
-- "background": at most 120 words of plain neutral prose: what the event is about and the recent facts behind it, with dates. No opinions, no predictions.
+- "names": the people who speak or are mentioned, at most 12, spelled exactly as reliable sources write them in Latin script — this is how a misheard name gets corrected, so include those you are sure the transcript means.
+- "background": at most 120 words of plain neutral prose: the recent facts behind what is being discussed, with dates. Skip what any reader knows (who the president is). No opinions, no predictions.
 - If the results say nothing useful about this event, return {"names": [], "background": ""}.`;
 }
 
@@ -1163,9 +1179,12 @@ async function webSearch(query) {
 }
 
 function dossierQuery(topics) {
-  const parts = [`Event: "${pageTitle || ''}"`, `Date and time, happening live right now: ${clockDateTime(sessionStartedAt)}`];
+  const parts = [`Page: "${pageTitle || ''}"`];
+  if (pageDescription) parts.push(`Page description: ${pageDescription}`);
+  parts.push(`Date and time, happening live right now: ${clockDateTime(sessionStartedAt)}`);
   if (PARTICIPANTS) parts.push(`Participants: ${PARTICIPANTS}`);
-  if (topics && topics.length) parts.push(`Topics raised so far:\n- ${topics.join('\n- ')}`);
+  if (topics && topics.length) parts.push(`Key points so far:\n- ${topics.join('\n- ')}`);
+  else if (dossierTranscript) parts.push(`Transcript of the first minutes:\n"${dossierTranscript}"`);
   return parts.join('\n');
 }
 
@@ -1209,11 +1228,11 @@ async function buildDossier(topics) {
   }
 }
 
-// Once per session, when the page title arrives (a reload of the same session keeps it).
+// Once per session (a reload of the same session keeps it), then once more if it lasts.
 function startDossier() {
   if (!isCapturing || dossierSessionId === sessionId) return;
   dossierSessionId = sessionId;
-  dossierPromise = buildDossier(null).catch(err => console.warn('[dossier] error:', err.message));
+  buildDossier(null).catch(err => console.warn('[dossier] error:', err.message));
   clearTimeout(dossierRefreshTimer);
   dossierRefreshTimer = setTimeout(() => {
     if (!isCapturing || dossierSessionId !== sessionId) return;
@@ -1223,12 +1242,9 @@ function startDossier() {
   }, DOSSIER_REFRESH_MS);
 }
 
-// Names for Gladia's custom vocabulary: the Participants first, then the dossier's.
-// Waits a little for the first dossier, never long — the transcription must start.
-async function vocabularyNames() {
-  if (dossierPromise && !dossier) {
-    await Promise.race([dossierPromise, new Promise(r => setTimeout(r, VOCABULARY_WAIT_MS))]);
-  }
+// Names for Gladia's custom vocabulary: the Participants, plus the dossier's when a
+// session (re)starts after it — the first one starts before any search has run.
+function vocabularyNames() {
   const names = PARTICIPANTS ? PARTICIPANTS.split(',').map(s => s.trim()).filter(Boolean) : [];
   for (const n of (dossier ? dossier.names : [])) {
     if (!names.some(x => x.toLowerCase() === n.name.toLowerCase())) names.push(n.name);
@@ -1240,8 +1256,27 @@ async function vocabularyNames() {
 // and a model that writes a paragraph would bury the card.
 const BACKGROUND_LINE_MAX = 220;
 
+// The prompt alone did not stop repeats: one event got "Donald Trump is the president of
+// the United States" on five of its seven cards. So a line that says what an earlier card
+// already said (mostly the same words) is dropped here.
+const BACKGROUND_REPEAT_OVERLAP = 0.6;
+let backgroundLinesShown = [];
+
+function backgroundWords(s) {
+  return new Set(s.toLowerCase().normalize('NFD').replace(/\p{M}/gu, '')
+    .split(/[^\p{L}\p{N}]+/u).filter(w => w.length >= 4));
+}
+
 function backgroundLine(text) {
-  const s = stripMarkdown(typeof text === 'string' ? text : '').replace(/\s+/g, ' ').trim();
+  let s = stripMarkdown(typeof text === 'string' ? text : '').replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+  const words = backgroundWords(s);
+  const repeats = backgroundLinesShown.some(prev => {
+    const hits = [...words].filter(w => prev.has(w)).length;
+    return words.size && hits / Math.min(words.size, prev.size || 1) >= BACKGROUND_REPEAT_OVERLAP;
+  });
+  if (repeats) { console.log('[keypoints] background line repeats an earlier one — dropped:', s); return ''; }
+  backgroundLinesShown.push(words);
   if (s.length <= BACKGROUND_LINE_MAX) return s;
   const cut = s.slice(0, BACKGROUND_LINE_MAX);
   return cut.slice(0, Math.max(cut.lastIndexOf(' '), BACKGROUND_LINE_MAX / 2)) + '…';
@@ -1562,6 +1597,8 @@ function longestCopiedRun(original, translation) {
 }
 
 function applyGladiaTranslation(line, tr, method) {
+  // Its original lost its "The Press" labels; the translation carries them translated.
+  if (line.hadLabels) tr = { ...tr, text: tidySpaces(tr.text.replace(PRESS_LABEL_TR_RE, '$1')) };
   const untranslated = line.needs && looksUntranslated(line.text, tr.text);
   // Even a line he understands feeds the interpretation index: its Spanish is what a later
   // interpreted line gets compared against (and vice versa). Nothing of this is shown.
@@ -1752,6 +1789,33 @@ function resetSlate() {
   slate = null;
 }
 
+// ── "The Press" / "The President" ─────────────────────────────────────────────
+// On White House events Gladia writes "The Press" or "The President" where it heard
+// someone it could not make out — mostly reporters asking off-mic — labels it seems to
+// have learned from official transcripts. In a 15-minute export, 5 lines were only that
+// label, each followed by 10–14 s of nothing. They are not speech, so they leave the text;
+// what they do say (a reporter or the president is talking) goes to the AI as a hint.
+// Only as a label: at the start of a line or after a sentence end, followed by a capital
+// or the end of the line — "the President said" is ordinary speech and stays — and not
+// before a full name: "The President Donald Trump!" introduces someone at a rally.
+const PRESS_LABEL_RE = /(^|[.?!…]\s+)The (Press|President)(?!\s+\p{Lu}[\p{L}'’-]*\s+\p{Lu})(?=\s+[A-Z"“]|\s*$)/gu;
+// The same labels in Gladia's translation of a line that had them.
+const PRESS_LABEL_TR_RE = /(^|[.?!…]\s+)(?:[Ll]a [Pp]rensa|[Ee]l [Pp]residente|The Press|The President)(?=\s+[A-ZÁÉÍÓÚÑ¿¡"“]|\s*$)/g;
+
+function tidySpaces(s) {
+  return s.replace(/\s{2,}/g, ' ').trim();
+}
+
+function splitPressLabels(text) {
+  let found = false;
+  const hinted = String(text || '').replace(PRESS_LABEL_RE, (m, pre, who) => {
+    found = true;
+    return pre + (who === 'Press' ? '[Reporter] ' : '[President] ');
+  });
+  if (!found) return { found, display: text, hinted: text };
+  return { found, display: tidySpaces(String(text).replace(PRESS_LABEL_RE, '$1')), hinted: tidySpaces(hinted) };
+}
+
 function relayTranscript(msg, timecode) {
   if (!activeTabId) return;
   timecode = msg.isFinal ? (timecode || getClockTimecode()) : '';
@@ -1776,6 +1840,7 @@ function relayTranscript(msg, timecode) {
     translation: '',
     speaker,
     lineId,
+    lagS: msg.isFinal && typeof msg.lagS === 'number' ? msg.lagS : null,
   });
 
   if (!msg.isFinal) return;
@@ -1802,6 +1867,7 @@ function relayTranscript(msg, timecode) {
     generation: gladiaGeneration, utteranceId: msg.utteranceId ?? null,
     start: msg.start ?? null, end: msg.end ?? null,
     timecode, language: msg.language || '',
+    hadLabels: !!msg.hinted,
   };
   const gladiaWon = () => line.gladiaDone || activeTabId !== tabId;
   // Runs once: when Gladia is late, or at once when its answer came back untranslated.
@@ -1839,6 +1905,16 @@ browser.runtime.onMessage.addListener((msg, sender) => {
         return Promise.resolve();
       }
       if (msg.isFinal && slate) closeSlate(utteranceStartMs(msg));
+      {
+        const labels = splitPressLabels(msg.text);
+        if (labels.found && !labels.display) {
+          // Nothing but the label: no line at all (and clear its interim from the panel).
+          if (msg.isFinal) console.log('[transcript] dropped a label-only line:', msg.text);
+          relayTranscript({ ...msg, isFinal: false, interim: true, text: '' });
+          return Promise.resolve();
+        }
+        if (labels.found) msg = { ...msg, text: labels.display, hinted: labels.hinted };
+      }
       if (msg.isFinal) {
         if (msg.speaker !== null && msg.speaker !== undefined) {
           currentSpeakerId = msg.speaker;
@@ -1851,7 +1927,8 @@ browser.runtime.onMessage.addListener((msg, sender) => {
           }
         }
         const tc = getClockTimecode();
-        onNewSentence(msg.text, currentSpeakerId, tc);
+        onNewSentence(msg.hinted || msg.text, currentSpeakerId, tc);
+        noteLineForDossier(msg.text);
         relayTranscript(msg, tc);
         return Promise.resolve();
       }
@@ -1873,12 +1950,12 @@ browser.runtime.onMessage.addListener((msg, sender) => {
     case 'PAGE_TITLE':
       pageTitle = msg.title || '';
       pageDate = msg.date || '';
-      startDossier();
+      pageDescription = msg.description || '';
       return Promise.resolve();
 
     // Gladia's session start asks for the names to put in its custom vocabulary.
     case 'GET_VOCABULARY':
-      return vocabularyNames().then(names => ({ names }));
+      return Promise.resolve({ names: vocabularyNames() });
 
     case 'PIPELINE_ERROR':
       if (activeTabId) sendToTab(activeTabId, { type: 'PIPELINE_ERROR', message: msg.message });
@@ -2111,6 +2188,7 @@ function stopFactCheck() {
   recentClaims.clear();
   pageTitle = '';
   pageDate = '';
+  pageDescription = '';
   sessionStartedAt = null;
   captureClaimedBy = null;
 

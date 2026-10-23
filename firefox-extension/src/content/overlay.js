@@ -1169,6 +1169,54 @@ function applyKeyPointVerdict(id, result) {
   if (typeof updateKeyPointVerdict === 'function') updateKeyPointVerdict(id, result);
 }
 
+// ── What the page says about the event ────────────────────────────────────────
+// The tab title is often just the site ("Live videos | Reuters Connect"), while the
+// event's own title and description sit on the page, near the player. They go to the
+// web search, which otherwise has nothing to go on. Generic on purpose: the meta tags,
+// the visible headings, and the text of the smallest block around the video that has
+// some — never our own panel.
+const PAGE_INFO_REREAD_MS = 150 * 1000;
+const PAGE_INFO_MAX = 1200;
+let pageInfoTimer = null;
+
+function pageEventDescription() {
+  const bits = [];
+  const add = (s) => {
+    const v = String(s || '').replace(/\s+/g, ' ').trim();
+    if (v.length < 4 || v === document.title) return;
+    if (bits.some(b => b.includes(v))) return;
+    bits.push(v);
+  };
+  const meta = (sel) => document.querySelector(sel)?.content;
+  add(meta('meta[property="og:title"]'));
+  add(meta('meta[property="og:description"]'));
+  add(meta('meta[name="description"]'));
+  const visible = (el) => !!el && el.offsetParent !== null && !(panel && panel.contains(el));
+  document.querySelectorAll('h1, h2, h3').forEach(h => { if (bits.length < 8 && visible(h)) add(h.innerText); });
+  const video = [...document.querySelectorAll('video')].find(visible);
+  for (let el = video && video.parentElement, depth = 0; el && depth < 8; el = el.parentElement, depth++) {
+    if (panel && el.contains(panel)) break;
+    const text = (el.innerText || '').trim();
+    if (text.length >= 40) { add(text.slice(0, PAGE_INFO_MAX)); break; }
+  }
+  return bits.join(' — ').slice(0, PAGE_INFO_MAX);
+}
+
+function sendPageInfo() {
+  const description = pageEventDescription();
+  if (description) console.log('[page] event description for the web search:', description);
+  browser.runtime.sendMessage({
+    type:  'PAGE_TITLE',
+    title: document.title || '',
+    description,
+    date:  (() => {
+      const el = document.querySelector('meta[itemprop="uploadDate"]') ||
+                 document.querySelector('meta[property="og:updated_time"]');
+      return el ? new Date(el.content).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : '';
+    })(),
+  });
+}
+
 // ── Final summary ──────────────────────────────────────────────────────────────
 
 function generateSummary() {
@@ -1519,15 +1567,11 @@ browser.runtime.onMessage.addListener((msg) => {
         }
         speakers = parseSpeakersFromTitle(document.title || '');
         speakerColorMap.clear();
-        browser.runtime.sendMessage({
-          type:  'PAGE_TITLE',
-          title: document.title || '',
-          date:  (() => {
-            const el = document.querySelector('meta[itemprop="uploadDate"]') ||
-                       document.querySelector('meta[property="og:updated_time"]');
-            return el ? new Date(el.content).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : '';
-          })(),
-        });
+        sendPageInfo();
+        // Pages that load the video's details late (Reuters Connect is an app) get read
+        // again shortly before the web search, which runs at ~3 minutes.
+        clearTimeout(pageInfoTimer);
+        pageInfoTimer = setTimeout(() => { if (panel) sendPageInfo(); }, PAGE_INFO_REREAD_MS);
         renderSpeakerEditor();
         if (typeof startAudioCapture === 'function') {
           startAudioCapture({ resume: isResume, captureMode: msg.captureMode, gladiaSessionUrl: msg.gladiaSessionUrl });
@@ -1556,7 +1600,7 @@ browser.runtime.onMessage.addListener((msg) => {
         const displayText = msg.text.replace(/^\[.*?\]\s*/, '');
         const translation = msg.translation || '';
         addTranscriptLine(ts, displayText, translation, msg.speaker || null, msg.lineId || null);
-        if (typeof logTranscript === 'function') logTranscript(ts, displayText, translation, msg.speaker || null, msg.lineId || null);
+        if (typeof logTranscript === 'function') logTranscript(ts, displayText, translation, msg.speaker || null, msg.lineId || null, msg.lagS);
         // track which speaker is active from label
         const labelMatch = msg.text.match(/^\[(.+?)\]/);
         if (labelMatch && speakers.includes(labelMatch[1])) {
