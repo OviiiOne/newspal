@@ -1201,7 +1201,34 @@ const PAGE_INFO_REREAD_MS = 150 * 1000;
 const PAGE_INFO_MAX = 1200;
 let pageInfoTimer = null;
 
+// Reuters Connect, where he follows most events: its detail panel has the event's headline,
+// description, slug and source. Scoped to that panel because the page's first <h1> is the
+// calendar's date. Its CSS classes are generated, so the fields are found by their labels.
+function reutersEventInfo() {
+  if (!/(^|\.)reutersconnect\.com$/.test(location.hostname)) return null;
+  const detail = document.querySelector('.live-video-detail');
+  const heading = detail && detail.querySelector('h1');
+  if (!heading) return null;
+  const text = (el) => ((el && el.textContent) || '').replace(/\s+/g, ' ').trim();
+  const body = [...detail.querySelectorAll('div[class*="whitespace-pre-line"]')]
+    .find(el => !el.hasAttribute('data-qa-component'));
+  const field = (label) => {
+    const name = [...detail.querySelectorAll('span')].find(s => text(s) === label);
+    return name ? text(name.parentElement).slice(label.length).trim() : '';
+  };
+  const title = text(heading);
+  const slug = field('Slug');
+  const source = field('Source');
+  return {
+    title,
+    description: [title, text(body), slug && 'Slug: ' + slug, source && 'Source: ' + source]
+      .filter(Boolean).join(' — '),
+  };
+}
+
 function pageEventDescription() {
+  const reuters = reutersEventInfo();
+  if (reuters) return reuters.description.slice(0, PAGE_INFO_MAX);
   const bits = [];
   const add = (s) => {
     const v = String(s || '').replace(/\s+/g, ' ').trim();
@@ -1229,7 +1256,8 @@ function sendPageInfo() {
   if (description) console.log('[page] event description for the web search:', description);
   browser.runtime.sendMessage({
     type:  'PAGE_TITLE',
-    title: document.title || '',
+    // The event's own headline when the page has one: the prompts call this the event.
+    title: reutersEventInfo()?.title || document.title || '',
     description,
     date:  (() => {
       const el = document.querySelector('meta[itemprop="uploadDate"]') ||
