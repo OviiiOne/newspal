@@ -911,6 +911,7 @@ function buildKeyPointCard(kp) {
       '<button class="rtfc-reinforce-btn" title="' + escapeHtml(t('ov_reinforce_title')) + '">👍</button>',
       '<button class="rtfc-edit-btn" title="' + escapeHtml(t('ov_edit_title')) + '">✏️</button>',
       '<button class="rtfc-discard-btn" title="' + escapeHtml(t('ov_discard_title')) + '">👎</button>',
+      '<button class="rtfc-remove-btn" title="' + escapeHtml(t('ov_remove_title')) + '">✕</button>',
     '</div>',
   ].join('');
 
@@ -932,9 +933,14 @@ function buildKeyPointCard(kp) {
   const discardBtn = card.querySelector('.rtfc-discard-btn');
   if (discardBtn) discardBtn.addEventListener('click', () => {
     browser.runtime.sendMessage({ type: 'FEEDBACK_NEGATIVE', text: kp.point });
-    kpCards.delete(kp._id);
-    card.remove();
+    dropKeyPointCard(card, kp);
   });
+
+  // ✕ Remove without teaching anything: the content may be fine and only this instance
+  // unwanted (a reporter's premise taken for the speaker's statement), which 👎 would
+  // wrongly learn as "don't extract things like this".
+  const removeBtn = card.querySelector('.rtfc-remove-btn');
+  if (removeBtn) removeBtn.addEventListener('click', () => dropKeyPointCard(card, kp));
 
   // 👍 Reinforce a good key point: learn to prioritise its like. Keeps the card.
   const reinforceBtn = card.querySelector('.rtfc-reinforce-btn');
@@ -983,6 +989,7 @@ function buildKeyPointCard(kp) {
       const newText = ta.value.trim();
       if (newText && newText !== original) {
         kp.point = newText;
+        kp.userEdited = true; // his wording: a later change of speaker won't rewrite it
         pointEl.textContent = newText;
         if (typeof updateKeyPointText === 'function') updateKeyPointText(kp._id, newText);
         browser.runtime.sendMessage({ type: 'FEEDBACK_CORRECTION', original, corrected: newText });
@@ -1049,8 +1056,23 @@ function editKeyPointSpeaker(card, kp) {
   cancel.addEventListener('click', close);
 }
 
+// Takes a card off the panel and out of the export and the summary.
+function dropKeyPointCard(card, kp) {
+  kpCards.delete(kp._id);
+  card.remove();
+  if (typeof removeKeyPoint === 'function') removeKeyPoint(kp._id);
+}
+
 function applyKeyPointSpeaker(card, kp, name) {
+  const previousSpeaker = kp.speaker;
   kp.speaker = name;
+  // The point's wording may name the wrong person ("The secretary says…"): have it fixed.
+  if (name !== previousSpeaker && !kp.userEdited) {
+    browser.runtime.sendMessage({
+      type: 'REWRITE_KEYPOINT_SPEAKER', id: kp._id, point: kp.point, quote: kp.quote || '',
+      oldSpeaker: previousSpeaker || '', newSpeaker: name,
+    });
+  }
   const tag = card.querySelector('.rtfc-speaker-tag');
   if (tag) {
     tag.textContent = name;
@@ -1705,6 +1727,20 @@ browser.runtime.onMessage.addListener((msg) => {
     case 'DOSSIER':
       if (msg.dossier && typeof setDossier === 'function') setDossier(msg.dossier);
       break;
+
+    // The point's wording, re-attributed after he changed its speaker. Skipped if the text
+    // changed meanwhile or he is editing it: his hand wins.
+    case 'KEYPOINT_REWRITTEN': {
+      const card = kpCards.get(msg.id);
+      if (!card || !card._kpData || card._kpData.point !== msg.previous || card._kpData.userEdited) break;
+      const pointEl = card.querySelector('.rtfc-kp-point');
+      if (!pointEl || card.querySelector('.rtfc-kp-edit')) break;
+      card._kpData.point = msg.point;
+      pointEl.textContent = msg.point;
+      pointEl.title = t('ov_kp_rewritten_title');
+      if (typeof updateKeyPointText === 'function') updateKeyPointText(msg.id, msg.point);
+      break;
+    }
 
     case 'NEW_KEYPOINTS':
       if (msg.results) {

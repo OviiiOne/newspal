@@ -599,6 +599,18 @@
 }
 .rtfc-discard-btn:hover { background: rgba(248,113,113,0.25); }
 
+.rtfc-remove-btn {
+  background: rgba(255,255,255,0.06);
+  border: 0.5px solid rgba(255,255,255,0.12);
+  border-radius: 6px;
+  color: #d0d0d0;
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.rtfc-remove-btn:hover { background: rgba(255,255,255,0.14); }
+
 #rtfc-interesting {
   position: fixed;
   z-index: 2147483647;

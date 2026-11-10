@@ -143,6 +143,14 @@ function updateKeyPointText(id, newText) {
   if (entry && newText && newText.trim()) { entry.point = newText.trim(); persistSession(); }
 }
 
+// A point the user threw away (👎 or ✕): gone from the export and from the summary's input.
+function removeKeyPoint(id) {
+  const i = keyPointsLog.findIndex(k => k.id === id);
+  if (i === -1) return;
+  keyPointsLog.splice(i, 1);
+  persistSession();
+}
+
 // The user put a name to a key point's speaker from its card (someone introduced
 // themselves mid conference) — keep the export in sync.
 function updateKeyPointSpeaker(id, name) {
