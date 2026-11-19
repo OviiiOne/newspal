@@ -11,6 +11,7 @@ let sessionSummary = '';
 let sessionSummaryModel = ''; // "Mistral · mistral-large-2512" — who wrote the summary
 let sessionSummarySources = []; // [{url, title}] of the web background blended into it
 let sessionDossier = null;      // the web background the AI was given (see background.js)
+let sessionLooseEnds = [];      // doubtful names and what the searches made of them
 let sessionStartTime = null;
 
 // ── Surviving a page reload ───────────────────────────────────────────────────
@@ -40,6 +41,7 @@ function persistSession() {
         summaryModel: sessionSummaryModel,
         summarySources: sessionSummarySources,
         dossier: sessionDossier,
+        looseEnds: sessionLooseEnds,
       },
     }).catch(() => {});
   }, 1500);
@@ -60,6 +62,7 @@ async function restoreSession(id) {
   sessionSummaryModel = stored.summaryModel || '';
   sessionSummarySources = Array.isArray(stored.summarySources) ? stored.summarySources : [];
   sessionDossier = stored.dossier || null;
+  sessionLooseEnds = Array.isArray(stored.looseEnds) ? stored.looseEnds : [];
   sessionLog.length = 0;
   transcriptLog.length = 0;
   keyPointsLog.length = 0;
@@ -67,7 +70,7 @@ async function restoreSession(id) {
   (stored.transcriptLog || []).forEach(x => transcriptLog.push(x));
   (stored.keyPointsLog  || []).forEach(x => keyPointsLog.push(x));
 
-  return { transcript: transcriptLog, keyPoints: keyPointsLog, summary: sessionSummary, summarySources: sessionSummarySources };
+  return { transcript: transcriptLog, keyPoints: keyPointsLog, summary: sessionSummary, summarySources: sessionSummarySources, looseEnds: sessionLooseEnds };
 }
 
 function logVerdict(result) {
@@ -127,6 +130,7 @@ function logKeyPoint(kp) {
     point: kp.point,
     quote: kp.quote || '',
     context: kp.context || '',
+    contextSource: kp.contextSource || '',
     speaker: kp.speaker || null,
     model: kp.model || '',
     modelId: kp.modelId || '',
@@ -157,16 +161,6 @@ function updateKeyPointSpeaker(id, name) {
   const entry = keyPointsLog.find(k => k.id === id);
   if (!entry || !name) return;
   entry.speaker = name;
-  persistSession();
-}
-
-function updateKeyPointVerdict(id, result) {
-  const entry = keyPointsLog.find(k => k.id === id);
-  if (!entry || !result) return;
-  entry.verdict = result.verdict || '';
-  entry.confidence = result.confidence || '';
-  entry.verdictExplanation = result.explanation || '';
-  entry.sources = result.sources || [];
   persistSession();
 }
 
@@ -235,6 +229,11 @@ function setDossier(dossier) {
 
 // Is there anything worth saving? Used by the ✕ guard: an empty session closes without
 // asking, one with content offers to export first.
+function setLooseEnds(items) {
+  sessionLooseEnds = Array.isArray(items) ? items.map(x => ({ ...x })) : [];
+  persistSession();
+}
+
 function sessionHasContent() {
   return !!(sessionLog.length || transcriptLog.length || keyPointsLog.length || sessionSummary);
 }
@@ -255,6 +254,7 @@ function startSession(id) {
   sessionSummaryModel = '';
   sessionSummarySources = [];
   sessionDossier = null;
+  sessionLooseEnds = [];
   sessionStartTime = Date.now();
   sessionId = (id === undefined || id === null) ? Date.now() : id;
   persistSession();
@@ -281,13 +281,90 @@ function webSourcesHTML(sources) {
 const NEWSPAL_REPO_URL = 'https://tangled.org/did:plc:esping2jbytufyhheu2aqdf4';
 const NEWSPAL_DOWNLOAD_URL = 'https://oviiione.tngl.io/newspal/';
 
-function exportPDF() {
+// Gladia cuts a speaker who pauses into several lines, each translated alone, so a
+// sentence reaches the export in pieces ("…the results of this." / "this coup."). Lines
+// that continue each other — same speaker, the next starts in lowercase or with "…", or
+// the previous has no closing punctuation — are joined back into one sentence.
+const FULL_SENTENCE_MAX_LINES = 8;
+
+function translatedLine(x) {
+  return !!(x && !x.modelChange && x.text && x.translation && x.translation.trim() &&
+    x.translation.trim() !== x.text.trim());
+}
+
+function continuesSentence(prev, next) {
+  const a = prev.text.trim(), b = next.text.trim();
+  return /^\p{Ll}|^(\.\.\.|…)/u.test(b) || !/[.!?…»"”]$/u.test(a) || /(\.\.\.|…)$/.test(a);
+}
+
+function sentenceGroups(log) {
+  const groups = [];
+  let group = null;
+  log.forEach((x, i) => {
+    if (!translatedLine(x)) { group = null; return; }
+    const prev = group && log[group[group.length - 1]];
+    if (prev && group.length < FULL_SENTENCE_MAX_LINES && prev.speaker === x.speaker && continuesSentence(prev, x)) {
+      group.push(i);
+    } else {
+      group = [i];
+      groups.push(group);
+    }
+  });
+  return groups.filter(g => g.length > 1);
+}
+
+function joinedSentence(log, group) {
+  return group.map((i, k) => {
+    let s = log[i].text.trim().replace(/^(\.\.\.|…)\s*/, '');
+    const next = k < group.length - 1 ? log[group[k + 1]].text.trim() : '';
+    // Gladia closes every cut with a full stop; drop it where the sentence goes on.
+    if (/^\p{Ll}/u.test(next)) s = s.replace(/\.$/, '');
+    return s.replace(/(\.\.\.|…)$/, '');
+  }).join(' ').replace(/\s+/g, ' ').trim();
+}
+
+// index of the group's LAST line → Google's translation of the whole sentence. Lines
+// Google could not translate keep their own translations.
+async function fullSentenceTranslations() {
+  const groups = sentenceGroups(transcriptLog);
+  const result = new Map();
+  if (!groups.length) return result;
+  try {
+    const texts = groups.map(g => joinedSentence(transcriptLog, g));
+    const translated = await browser.runtime.sendMessage({ type: 'TRANSLATE_FOR_EXPORT', texts });
+    groups.forEach((g, k) => {
+      const tr = Array.isArray(translated) ? String(translated[k] || '').trim() : '';
+      // The sentence's start time goes with its translation: he may not read the original's
+      // language, so the line above it cannot tell him where to cut.
+      const timecode = transcriptLog[g[0]].timecode || '';
+      if (tr) g.forEach((i, n) => result.set(i, { last: n === g.length - 1, translation: tr, timecode }));
+    });
+  } catch (err) {
+    console.warn('[export] full-sentence translation unavailable:', err);
+  }
+  return result;
+}
+
+async function exportPDF() {
   if (!sessionLog.length && !transcriptLog.length && !keyPointsLog.length && !sessionSummary) {
     alert(t('ex_nothing'));
     return;
   }
+  // Last search for doubtful names still open, then the full-sentence translations.
+  if (sessionLooseEnds.some(x => x.status === 'pending')) {
+    if (typeof showError === 'function') showError(t('ex_checking_names'), 'info');
+    try {
+      const items = await browser.runtime.sendMessage({ type: 'RESOLVE_LOOSE_ENDS', items: sessionLooseEnds });
+      if (Array.isArray(items) && items.length) setLooseEnds(items);
+    } catch (err) { console.warn('[export] doubtful names not looked up:', err); }
+  }
+  if (sentenceGroups(transcriptLog).length && typeof showError === 'function') showError(t('ex_translating'), 'info');
+  const fullSentences = await fullSentenceTranslations();
 
-  const pageTitle = document.title || 'NewsPal';
+  // The event's own headline when the page has one (Reuters Connect: the tab only says
+  // "Live videos | Reuters Connect"); reutersEventInfo lives in overlay.js.
+  const headline = typeof reutersEventInfo === 'function' ? reutersEventInfo()?.title : '';
+  const pageTitle = headline || document.title || 'NewsPal';
   const exportDate = new Date().toLocaleString();
 
   const verdictColor = (v, c) => {
@@ -377,8 +454,12 @@ function exportPDF() {
           : '';
         const quote = kp.quote ? '<div class="kp-quote">“' + escapeHtml(kp.quote) + '”</div>' : '';
         const context = kp.context
-          ? '<div class="kp-context">🌐 ' + escapeHtml(t('ov_kp_context')) + ': ' + escapeHtml(kp.context) + '</div>'
+          ? '<div class="kp-context' + (kp.contextSource === 'ai' ? ' kp-context-ai' : '') + '" title="' +
+            escapeHtml(contextLabel(kp.contextSource).title) + '">' + contextLabel(kp.contextSource).icon + ' ' +
+            escapeHtml(contextLabel(kp.contextSource).label) + ': ' + escapeHtml(kp.context) + '</div>'
           : '';
+        const unclear = looseEndsFor((kp.quote || '') + ' ' + (kp.point || ''), sessionLooseEnds)
+          .map(x => '<div class="kp-unclear" title="' + escapeHtml(t('ov_le_title')) + '">' + escapeHtml(looseEndText(x)) + '</div>').join('');
         let verdict = '';
         if (kp.verdict) {
           const vc = verdictColor(kp.verdict, kp.confidence);
@@ -399,6 +480,7 @@ function exportPDF() {
           '<div class="kp-point">' + escapeHtml(kp.point) + '</div>' +
           quote +
           context +
+          unclear +
           verdict +
         '</div>';
       }).join('')
@@ -440,20 +522,23 @@ function exportPDF() {
   const aiBadgeHTML = '<span class="ai-badge" title="' + escapeHtml(t('ov_ai_badge_title')) + '">' +
     escapeHtml(t('ov_ai_badge')) + '</span>';
   const engineTitles = { gladia: t('ov_tr_by_gladia'), google: t('ov_tr_by_google'), ai: t('ov_ai_badge_title') };
+  const fullTitle = t('ex_tr_full_title');
   // How many lines each translator ended up owning — the numbers to judge the engines by.
   const trCounts = { gladia: 0, google: 0, ai: 0 };
   transcriptLog.forEach(x => {
     if (!x.modelChange && x.translation && x.translation.trim() && x.translation.trim() !== (x.text || '').trim() &&
         trCounts[x.translationSource] !== undefined) trCounts[x.translationSource]++;
   });
+  const fullCount = [...fullSentences.values()].filter(x => x.last).length;
   const trCountsHTML = (trCounts.gladia + trCounts.google + trCounts.ai)
-    ? '<div class="transcript-model">' + escapeHtml(fmt(t('ex_tr_counts'), trCounts)) + '</div>'
+    ? '<div class="transcript-model">' + escapeHtml(fmt(t('ex_tr_counts'), trCounts)) +
+      (fullCount ? ' · ' + escapeHtml(fmt(t('ex_tr_full_count'), { n: fullCount })) : '') + '</div>'
     : '';
   const transcriptHTML = transcriptLog.length
     ? '<div class="claims-title">' + escapeHtml(t('ex_transcript')) + ' (' + transcriptLog.filter(x => !x.modelChange).length + ')</div>' +
       trCountsHTML +
       '<div class="transcript">' +
-        transcriptLog.map(t => {
+        transcriptLog.map((t, index) => {
           // Model-change marker (not a spoken line): render inline in the flow.
           if (t.modelChange) {
             return '<div class="transcript-model">— ' + escapeHtml(t.modelChange) +
@@ -465,7 +550,12 @@ function exportPDF() {
             spkHTML = '<div class="transcript-speaker" style="color:' + speakerColor(t.speaker) + '">' + escapeHtml(t.speaker) + '</div>';
           }
           const isAi = t.translationSource === 'ai';
-          const tr = (t.translation && t.translation.trim() && t.translation.trim() !== (t.text || '').trim())
+          const full = fullSentences.get(index);
+          const tr = full
+            ? (full.last ? '<div class="transcript-tr transcript-tr-full" title="' + escapeHtml(fullTitle) + '">↳ ' +
+                (full.timecode ? '<span class="transcript-tc">[' + escapeHtml(full.timecode) + ']</span> ' : '') +
+                escapeHtml(full.translation) + '</div>' : '')
+            : (t.translation && t.translation.trim() && t.translation.trim() !== (t.text || '').trim())
             ? '<div class="transcript-tr' + (isAi ? ' transcript-tr-ai' : '') + '"' +
               (engineTitles[t.translationSource] ? ' title="' + escapeHtml(engineTitles[t.translationSource]) + '"' : '') + '>↳ ' +
               (isAi ? aiBadgeHTML : '') + escapeHtml(t.translation) + '</div>'
@@ -525,6 +615,8 @@ function exportPDF() {
     '.kp-point { font-size: 13px; color: #222; margin-bottom: 4px; }' +
     '.kp-quote { font-size: 12px; font-style: italic; color: #666; }' +
     '.kp-context { font-size: 12px; color: #0f766e; margin-top: 4px; }' +
+    '.kp-context-ai { color: #6b7280; }' +
+    '.kp-unclear { font-size: 12px; color: #b45309; margin-top: 4px; }' +
     '.web-sources { font-size: 11px; color: #555; margin-top: 8px; }' +
     '.web-sources a { margin-right: 10px; }' +
     '.dossier-box { margin-top: 16px; }' +
@@ -535,6 +627,7 @@ function exportPDF() {
     '.transcript-tc { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; font-weight: 600; color: #b45309; }' +
     '.transcript-tr { margin-left: 16px; color: #1d4ed8; font-size: 12px; line-height: 1.5; }' +
     '.transcript-tr-ai { color: #7c3aed; }' +
+    '.transcript-tr-full { border-left: 2px solid #93c5fd; padding-left: 6px; }' +
     '.ai-badge { display: inline-block; font-size: 8px; font-weight: 700; line-height: 1; padding: 1px 2px; margin-right: 4px; border: 1px solid currentColor; border-radius: 2px; vertical-align: 1px; }' +
     '.transcript-speaker { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; margin: 8px 0 2px; }' +
     '.transcript-model { font-size: 10px; font-weight: 700; color: #7c3aed; text-align: center; margin: 8px 0; letter-spacing: 0.03em; }' +

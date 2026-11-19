@@ -270,12 +270,10 @@ const I18N = {
     ov_part_del_title: 'Quitar',
     ov_part_edit_prompt: 'Editar nombre del participante:',
     ov_interesting: '⭐ Interesante',
-    ov_verify: '✓ Verificar',
-    ov_verifying: '⟳ Verificando…',
-    ov_verify_disabled_title: 'Verificación no disponible por ahora: la búsqueda web no funciona en el plan gratuito de Groq',
     ov_discard_title: 'No relevante — descartar y aprender',
     ov_remove_title: 'Quitar sin aprender: la IA no toma nota',
     ov_kp_rewritten_title: 'Redactado de nuevo por la IA al cambiar el hablante — el lápiz lo corrige',
+    ov_kp_dropped_after_speaker: 'Tarjeta quitada: dicha por {name}, la IA no la ve como punto clave',
     ov_reinforce_title: 'Punto acertado — reforzar y aprender',
     ov_reinforced_title: 'Reforzado ✓',
     ov_edit_title: 'Corregir el texto de este punto',
@@ -290,6 +288,9 @@ const I18N = {
     bg_tr_gladia_on: 'Traductor: Gladia (modelo {model}), con Google e IA de reserva',
     bg_tr_gladia_silent: 'Traductor: Gladia no envía traducciones — traducen Google y la IA',
     ex_tr_counts: 'Traducciones: Gladia {gladia} · Google {google} · IA {ai}',
+    ex_tr_full_count: 'frases completas (Google) {n}',
+    ex_tr_full_title: 'Frase completa traducida por Google al exportar: venía cortada en varias líneas',
+    ex_translating: 'Traduciendo las frases completas para el export…',
     ac_no_sound: 'No llega sonido del vídeo a la extensión ({s} s de silencio total). Si el vídeo sí suena, Firefox está bloqueando su audio —pasa con vídeos servidos desde otro servidor— y no se va a transcribir.',
     ov_no_sound_marker: 'Sin sonido del vídeo',
     ov_slate_in: 'CARETA IN',
@@ -301,7 +302,6 @@ const I18N = {
     bg_gt_http: 'HTTP {status}',
     bg_gt_blocked: 'devuelve una página de bloqueo en vez de la traducción',
     bg_gt_shape: 'respuesta con formato inesperado',
-    ov_no_verdict: 'No se pudo verificar (búsqueda web no disponible). Inténtalo de nuevo.',
     ov_confidence: 'confianza',
     ov_source: 'Fuente',
     ov_summary_title: 'Resumen',
@@ -324,6 +324,15 @@ const I18N = {
     ov_kp_speaker_ph: 'Nombre del hablante',
     ov_kp_context: 'Contexto',
     ov_kp_context_title: 'De una búsqueda web, no de lo que se dijo en el acto',
+    ov_kp_context_ai: 'Contexto (lo sabe la IA)',
+    ov_le_pending: '«{term}» puede estar mal oído — se comprobará en la próxima búsqueda',
+    ov_le_found: '«{term}» puede estar mal oído: ¿{likely}?',
+    ov_le_confirmed: '«{term}» aparece así en la búsqueda web',
+    ov_le_notfound: '«{term}» puede estar mal oído: la búsqueda no encontró nada que encaje',
+    ov_le_unchecked: '«{term}» puede estar mal oído (no se pudo buscar)',
+    ov_le_title: 'Nombre que la IA cree mal transcrito. El texto de la tarjeta no se ha cambiado: compruébalo en el vídeo',
+    ex_checking_names: 'Buscando los nombres dudosos que quedan…',
+    ov_kp_context_ai_title: 'No sale de la búsqueda web ni de lo que se dijo en el acto: es lo que sabe la IA y puede estar desfasado',
     ov_web_sources: 'Fuentes del contexto',
     // LLM chain
     bg_llm_all_failed: 'Ningún modelo de IA ha respondido, así que no habrá puntos clave ni resumen. Detalle — {detail}',
@@ -470,12 +479,10 @@ const I18N = {
     ov_part_del_title: 'Remove',
     ov_part_edit_prompt: "Edit participant's name:",
     ov_interesting: '⭐ Interesting',
-    ov_verify: '✓ Verify',
-    ov_verifying: '⟳ Verifying…',
-    ov_verify_disabled_title: "Verification unavailable for now: web search doesn't work on Groq's free tier",
     ov_discard_title: 'Not relevant — discard and learn',
     ov_remove_title: 'Remove without learning: the AI takes no note',
     ov_kp_rewritten_title: 'Reworded by the AI after the speaker changed — the pencil corrects it',
+    ov_kp_dropped_after_speaker: 'Card removed: said by {name}, the AI does not see it as a key point',
     ov_reinforce_title: 'Good point — reinforce and learn',
     ov_reinforced_title: 'Reinforced ✓',
     ov_edit_title: 'Correct this point’s text',
@@ -490,6 +497,9 @@ const I18N = {
     bg_tr_gladia_on: 'Translator: Gladia ({model} model), with Google and AI as backup',
     bg_tr_gladia_silent: 'Translator: Gladia is sending no translations — Google and AI are translating',
     ex_tr_counts: 'Translations: Gladia {gladia} · Google {google} · AI {ai}',
+    ex_tr_full_count: 'full sentences (Google) {n}',
+    ex_tr_full_title: 'Full sentence translated by Google at export: it arrived cut into several lines',
+    ex_translating: 'Translating the full sentences for the export…',
     ac_no_sound: 'No sound from the video is reaching the extension ({s} s of total silence). If the video does play sound, Firefox is blocking its audio —it happens with videos served from another server— and it will not be transcribed.',
     ov_no_sound_marker: 'No sound from the video',
     ov_slate_in: 'SLATE IN',
@@ -501,7 +511,6 @@ const I18N = {
     bg_gt_http: 'HTTP {status}',
     bg_gt_blocked: 'returns a block page instead of a translation',
     bg_gt_shape: 'unexpected response format',
-    ov_no_verdict: 'Could not verify (web search unavailable). Try again.',
     ov_confidence: 'confidence',
     ov_source: 'Source',
     ov_summary_title: 'Summary',
@@ -524,6 +533,15 @@ const I18N = {
     ov_kp_speaker_ph: 'Speaker name',
     ov_kp_context: 'Context',
     ov_kp_context_title: 'From a web search, not from what was said at the event',
+    ov_kp_context_ai: 'Context (AI knowledge)',
+    ov_le_pending: '“{term}” may be misheard — it will be checked in the next search',
+    ov_le_found: '“{term}” may be misheard: {likely}?',
+    ov_le_confirmed: '“{term}” appears like this in the web search',
+    ov_le_notfound: '“{term}” may be misheard: the search found nothing that fits',
+    ov_le_unchecked: '“{term}” may be misheard (could not search)',
+    ov_le_title: 'A name the AI thinks was mistranscribed. The card text was not changed: check it in the video',
+    ex_checking_names: 'Looking up the doubtful names still open…',
+    ov_kp_context_ai_title: "Not from the web search nor from what was said at the event: it is what the AI knows, and may be out of date",
     ov_web_sources: 'Context sources',
     // LLM chain
     bg_llm_all_failed: 'No AI model answered, so there will be no key points or summary. Detail — {detail}',
@@ -584,6 +602,29 @@ const I18N = {
     ex_mt_label: 'Gladia machine translation (reading aid only, may contain errors):',
   },
 };
+
+// A key point's background line: 🌐 when it came from the web search, 🧠 when it is the
+// model's own knowledge (decided in background.js, contextOrigin). The panel and the
+// export share it.
+function contextLabel(source) {
+  return source === 'ai'
+    ? { icon: '🧠', label: t('ov_kp_context_ai'), title: t('ov_kp_context_ai_title') }
+    : { icon: '🌐', label: t('ov_kp_context'), title: t('ov_kp_context_title') };
+}
+
+// Doubtful names (background.js "loose ends") that a key point's quote or text contains,
+// and the warning line for each. The panel and the export share them.
+function looseEndsFor(text, items) {
+  const plain = s => String(s || '').toLowerCase().normalize('NFD').replace(/\p{M}/gu, '');
+  const hay = plain(text);
+  return (items || []).filter(x => x && x.term && hay.includes(plain(x.term)));
+}
+
+function looseEndText(item) {
+  const icon = item.status === 'confirmed' ? 'ℹ ' : '⚠ ';
+  const line = t('ov_le_' + (item.status || 'pending')).replace('{term}', item.term).replace('{likely}', item.likely || '');
+  return icon + line + (item.note ? ' — ' + item.note : '');
+}
 
 function t(key) {
   const d = I18N[UI_LANG] || I18N.es;

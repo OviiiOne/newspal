@@ -168,19 +168,19 @@ Return ONLY a JSON array. No markdown, no explanation outside the array.`;
 // every month in a DIFFERENT war, then said his own operation "has never been that" — and
 // the model reported his operation as losing that many. No concrete example here on
 // purpose: models echo examples as if they had been said.
-const REFERENCE_RULE = 'KEEP WHAT EACH STATEMENT REFERS TO: when a speaker compares, contrasts or denies, every figure and claim stays attached to the exact subject the speaker gave it. Never move a number from one country, war, person or period to another, and never drop a negation ("never", "not", "unlike"): if the speaker says something is NOT like a case they just described, report that it is not. When you cannot tell what a figure refers to, leave it out.';
+const REFERENCE_RULE = 'KEEP WHAT EACH STATEMENT REFERS TO: when a speaker compares, contrasts or denies, every figure and claim stays attached to the exact subject the speaker gave it. Never move a number from one country, war, person or period to another, and never drop a negation ("never", "not", "unlike"): if the speaker says something is NOT like a case they just described, report that it is not. When you cannot tell what a figure refers to, leave it out. KEEP WHO SAYS WHAT: when the speaker reports, quotes or rejects what OTHERS say ("they say", "the Americans ask us"), the words stay with whoever the speaker gave them to; when you cannot tell who "they" are, name no one — never pick the nearest name mentioned.';
 
 // With a web dossier the key point may carry one line of background, which the card shows
 // apart from the point. It may come ONLY from that block — without one, no such field.
 function backgroundRule(L) {
-  return `\n\nBACKGROUND BLOCK: the request may include background from a web search. It was NOT said at the event. Use it ONLY to spell names and titles correctly and to understand what a speaker refers to — never as a source of key points or quotes. Add to each point a "context" field: ONE short sentence in ${L.name.toUpperCase()} taken from that block that explains something IN THIS POINT a reader may not know — a person, place, decision or earlier event it mentions. NEVER say who the speaker is or what office they hold, nor anything a news reader already knows; never repeat a context given for an earlier point. Most points need none: then "". Never use your own knowledge for "context".`;
+  return `\n\nBACKGROUND BLOCK: the request may include background from a web search. It was NOT said at the event. Use it ONLY to spell names and titles correctly and to understand what a speaker refers to — never as a source of key points or quotes. Add to each point a "context" field: ONE short sentence in ${L.name.toUpperCase()} that explains something IN THIS POINT a reader may not know. Take it from that block; only when the block says nothing about it, you may use well-established general knowledge of what a place, organisation, treaty or past event IS — never anything that may have changed recently (current offices, recent events, figures) — a person, place, decision or earlier event it mentions. NEVER say who the speaker is or what office they hold, nor anything a news reader already knows; never repeat a context given for an earlier point. It must explain a name or term written IN THIS POINT: a fact that is only about the same event or the same general subject is not context for it. NEVER GUESS: no "possibly", "probably", "perhaps" or "may refer to" — if the block does not say plainly what something is, or a word may have been misheard, give "". Most points need none: then "".`;
 }
 
 function keypointsPrompt(withBackground) {
   const L = promptLang();
   return `You are following a live press conference or political statement. From the transcript excerpt, extract the noteworthy KEY POINTS: announcements, figures/statistics, commitments or promises, factual claims, geopolitical and foreign-policy positions, statements about conflicts or security, accusations, threats, denials, named decisions, and important verbatim quotes.
 
-Be EXTREMELY SELECTIVE — extract only what a journalist would put in a headline or jot down to quote later: a real announcement, a hard figure/statistic, a concrete commitment or promise, a named decision, or a significant claim (including geopolitical ones like "Iran will not have a nuclear weapon"). SKIP routine narration, scene-setting, transitions, hedging, thanks and small talk. ALSO skip personal praise, compliments and mutual flattery between officials (e.g. one leader calling another "a great guy / the best Secretary General"), greetings, and procedural remarks ("any questions?").
+Be EXTREMELY SELECTIVE — extract only what a journalist would put in a headline or jot down to quote later: a real announcement, a hard figure/statistic, a concrete commitment or promise, a named decision, or a significant claim (including geopolitical ones like "Iran will not have a nuclear weapon"). SKIP routine narration, scene-setting, transitions, hedging, thanks and small talk. NEVER take a REPORTER'S QUESTION for a statement: a question, the premises inside it and the reporter's self-introduction (a name and an outlet, then a question) are not key points and are never the speaker's words. Only the answer counts. ALSO skip personal praise, compliments and mutual flattery between officials (e.g. one leader calling another "a great guy / the best Secretary General"), greetings, and procedural remarks ("any questions?").
 
 Return AT MOST ONE key point for this excerpt — the single most newsworthy item — and return NONE unless it clearly clears that bar. The DEFAULT answer is none: most excerpts produce {"points": []}. When in doubt, omit. Do NOT turn every sentence into a key point; restating the same idea in different words is NOT a new key point.
 
@@ -199,6 +199,7 @@ Return ONLY a JSON object of the form {"points": [ ... ]} (no markdown, no text 
 - "category": a short UPPERCASE label. Prefer one of: ${L.cats}. If none fits well, invent a concise label in ${L.name} (one or two words, e.g. ${L.catExamples}). Use ${L.catOther} only as a last resort.
 - "quote": the most relevant short verbatim fragment from the transcript, in its ORIGINAL language (or "" if none)
 - "speaker": who said it, using a real name when known; never "Speaker N"; null if unknown
+- "unclear": names of people, places, organisations or events IN THE QUOTE that make no sense in context or look misheard by speech recognition, copied exactly as the quote writes them; [] when none, which is the usual case
 
 If nothing is noteworthy, return {"points": []}.${withBackground ? backgroundRule(L) : ''}`;
 }
@@ -231,18 +232,6 @@ function translatePrompt(sourceCode) {
     ? passthrough.slice(0, -1).join(', ') + ' or ' + passthrough[passthrough.length - 1]
     : passthrough[0];
   return `Translate the user's text into ${L.name}. If the text is already in ${passList}, return it EXACTLY as-is, unchanged. Output ONLY the resulting text — no quotes, no notes, no explanation. ${TRANSLATE_KEEP}`;
-}
-
-function verifyPrompt() {
-  const L = promptLang();
-  return `You are a fact-checker. Evaluate the SINGLE claim the user provides, using the web results if given and your own knowledge. Take the event date/context into account.
-
-Return ONLY a JSON object (no array, no markdown) with:
-- "verdict": one of TRUE, SUBSTANTIALLY TRUE, FALSE, MISLEADING, UNVERIFIABLE
-- "confidence": one of HIGH, MEDIUM, LOW
-- "explanation": 1-2 sentences IN ${L.name.toUpperCase()} explaining the verdict and what the evidence says
-
-No text outside the JSON object.`;
 }
 
 function summaryPrompt() {
@@ -290,7 +279,7 @@ Return ONLY a JSON object of the form {"rules": ["...", "..."]} — no markdown,
 
 function manualKeypointPrompt(withBackground) {
   const L = promptLang();
-  return (withBackground ? backgroundRule(L).trim() + '\n\n' : '') + REFERENCE_RULE + '\n\n' + `The user manually marked this transcript fragment as important. Turn it into EXACTLY ONE key point. You may be given PRECEDING TRANSCRIPT and a list of participants: use them ONLY to tell who is speaking and to understand what the fragment refers to — summarize ONLY the marked fragment, NEVER the context. If the fragment is ONE statement, summarize it whole, from its first sentence to its last — do not drop the beginning or keep only the ending. If it contains SEVERAL distinct statements (the user selected a long passage), summarize the most newsworthy one instead of blending them all together. Return ONLY a JSON object: {"point": "<concise neutral one-sentence summary in ${L.name.toUpperCase()} covering the entire fragment>", "category": "<one of ${L.cats}, or a short ${L.name} label>", "quote": "<the FULL fragment in its original language>", "speaker": "<who said the fragment: follow the Participants rule given in the user message — use the EXACT participant name, or ${L.otherSpeaker} for anyone not listed, or null if truly impossible to tell>"}. No text outside the JSON.`;
+  return (withBackground ? backgroundRule(L).trim() + '\n\n' : '') + REFERENCE_RULE + '\n\n' + `The user manually marked this transcript fragment as important. Turn it into EXACTLY ONE key point. You may be given PRECEDING TRANSCRIPT and a list of participants: use them ONLY to tell who is speaking and to understand what the fragment refers to — summarize ONLY the marked fragment, NEVER the context. If the fragment is ONE statement, summarize it whole, from its first sentence to its last — do not drop the beginning or keep only the ending. If it contains SEVERAL distinct statements (the user selected a long passage), summarize the most newsworthy one instead of blending them all together. Return ONLY a JSON object: {"point": "<concise neutral one-sentence summary in ${L.name.toUpperCase()} covering the entire fragment>", "category": "<one of ${L.cats}, or a short ${L.name} label>", "quote": "<the FULL fragment in its original language>", "speaker": "<who said the fragment: follow the Participants rule given in the user message — use the EXACT participant name, or ${L.otherSpeaker} for anyone not listed, or null if truly impossible to tell>", "unclear": [<names of people, places, organisations or events in the quote that make no sense in context or look misheard by speech recognition, copied exactly as written; usually none>]}. No text outside the JSON.`;
 }
 
 // ── Speaker parsing ──────────────────────────────────────────────────────────
@@ -973,13 +962,14 @@ async function extractKeyPoints(contextText, title, lexicalSummary, lexicalSnaps
     if (activeTabId) {
       sendToTab(activeTabId, {
         type: 'NEW_KEYPOINTS',
-        results: valid.map(r => ({
+        results: valid.map(r => ({ r, context: background ? backgroundLine(r.context) : '' })).map(({ r, context }) => ({
           point: r.point,
           category: (r.category || promptLang().catOther).toUpperCase(),
           quote: r.quote || '',
-          context: background ? backgroundLine(r.context) : '',
-          speaker: dominantSpeaker
-            || (r.speaker && !String(r.speaker).match(/^Speaker\s*\d+$/i) ? r.speaker : null),
+          context,
+          contextSource: contextOrigin(context, r.point, r.quote),
+          speaker: canonicalSpeaker(dominantSpeaker
+            || (r.speaker && !String(r.speaker).match(/^Speaker\s*\d+$/i) ? r.speaker : null)),
           dominantSpeakerId,
           model: activeProvider,
           modelId: answer.model,
@@ -989,6 +979,7 @@ async function extractKeyPoints(contextText, title, lexicalSummary, lexicalSnaps
         })),
       });
     }
+    noteLooseEnds(candidate.unclear, candidate.quote);
   } catch (err) {
     console.error('[keypoints] error:', err);
   }
@@ -1014,11 +1005,13 @@ async function addManualKeyPoint(text, speaker, context, timecode) {
       manualKeypointPrompt(!!background), false, 512, true
     );
     const kp = parseObject(answer.text);
+    const context = (kp && kp.point && background) ? backgroundLine(kp.context) : '';
     const result = (kp && kp.point)
-      ? { point: kp.point, category: (kp.category || catOther).toUpperCase(), quote: kp.quote || text, context: background ? backgroundLine(kp.context) : '', speaker: spk || kp.speaker || null, dominantSpeakerId: null, model: activeProvider, modelId: answer.model, timecode: tc }
+      ? { point: kp.point, category: (kp.category || catOther).toUpperCase(), quote: kp.quote || text, context, contextSource: contextOrigin(context, kp.point, kp.quote || text), speaker: canonicalSpeaker(spk || kp.speaker || null), dominantSpeakerId: null, model: activeProvider, modelId: answer.model, timecode: tc }
       : { point: text, category: catOther, quote: text, speaker: spk, dominantSpeakerId: null, model: activeProvider, modelId: answer.model, timecode: tc };
     rememberClaim(result.point);
     if (activeTabId) sendToTab(activeTabId, { type: 'NEW_KEYPOINTS', results: [result] });
+    if (kp && kp.point) noteLooseEnds(kp.unclear, result.quote);
   } catch (err) {
     console.error('[manual-keypoint] error:', err);
     if (activeTabId) sendToTab(activeTabId, { type: 'NEW_KEYPOINTS', results: [{ point: text, category: catOther, quote: text, speaker: spk, timecode: tc }] });
@@ -1036,9 +1029,17 @@ function pointNamesItsSpeaker(point, oldSpeaker) {
   return String(oldSpeaker || '').toLowerCase().split(/\s+/).some(w => w.length >= 4 && low.includes(w));
 }
 
+// One call answers both: is it still a key point now that we know who said it (a
+// reporter's question taken for the speaker's statement is not), and if so, its wording
+// with the right person.
 function speakerRewritePrompt() {
   const L = promptLang();
-  return `A news key point was attributed to the wrong person. Reword it so the statement is attributed to the person given. Change ONLY the words that say who is speaking (a name, an office, "the secretary"). Every fact, figure, other person's name, tense and negation stays exactly as it is. Refer to the new person by the name given, adding no title of your own. Write in ${L.name.toUpperCase()}, plain text, one sentence. Return only that sentence.`;
+  return `A news key point was attributed to the wrong person. You get who it was attributed to, who actually said it, what was said, and the people named at the event so far.
+
+1. "keep": would a journalist covering this event still note it as a key point, now that it was said by this person? A question asked by a reporter or moderator, the premises inside that question, and a self-introduction are NOT key points: false. A statement by another speaker at the event usually still is: true.
+2. "point": the key point reworded so the statement is attributed to the person given. Change ONLY the words that say who is speaking (a name, an office, "the secretary"). Every fact, figure, other person's name, tense and negation stays exactly as it is. Refer to the new person by the name given, adding no title of your own. ${L.name.toUpperCase()}, plain text, one sentence.
+
+Return ONLY a JSON object: {"keep": true or false, "point": "<the reworded sentence>"}. No text outside the JSON.`;
 }
 
 // A reworded sentence must still say the same thing: same figures, same negations, about
@@ -1052,14 +1053,26 @@ function rewriteKeepsMeaning(original, rewritten) {
 
 async function rewriteKeyPointSpeaker(msg) {
   const point = String(msg.point || '');
-  if (!point || !msg.newSpeaker || !pointNamesItsSpeaker(point, msg.oldSpeaker)) return;
+  if (!point || !msg.newSpeaker) return;
   try {
     const quote = msg.quote ? `\nWhat was said: "${msg.quote}"` : '';
+    const main = PARTICIPANTS ? `\nPeople named at the event: ${PARTICIPANTS}` : '';
     const answer = await callClaude(
-      `Wrongly attributed to: ${msg.oldSpeaker || 'unknown'}\nActually said by: ${msg.newSpeaker}${quote}\nKey point: ${point}`,
-      speakerRewritePrompt(), false, 512, false, true
+      `Wrongly attributed to: ${msg.oldSpeaker || 'unknown'}\nActually said by: ${msg.newSpeaker}${main}${quote}\nKey point: ${point}`,
+      speakerRewritePrompt(), false, 512, true, true
     );
-    const rewritten = stripMarkdown(answer.text).replace(/\s+/g, ' ').trim().replace(/^["“]|["”]$/g, '');
+    const result = parseObject(answer.text);
+    if (!result) return;
+    if (result.keep === false) {
+      // Not a statement after all. The point stays in the dedup list, so the same
+      // question is not picked up again.
+      console.log('[keypoints] not a key point once attributed to', msg.newSpeaker, '— removed:', point);
+      if (activeTabId) sendToTab(activeTabId, { type: 'KEYPOINT_NOT_NEWSWORTHY', id: msg.id, previous: point, speaker: msg.newSpeaker });
+      return;
+    }
+    // Rewording is only needed when the sentence names the old speaker.
+    if (!pointNamesItsSpeaker(point, msg.oldSpeaker)) return;
+    const rewritten = stripMarkdown(String(result.point || '')).replace(/\s+/g, ' ').trim().replace(/^["“]|["”]$/g, '');
     if (!rewritten || rewritten === point) return;
     if (!rewriteKeepsMeaning(point, rewritten)) {
       console.warn('[keypoints] speaker rewrite changed the meaning — kept the original:', rewritten);
@@ -1071,41 +1084,6 @@ async function rewriteKeyPointSpeaker(msg) {
     if (activeTabId) sendToTab(activeTabId, { type: 'KEYPOINT_REWRITTEN', id: msg.id, previous: point, point: rewritten });
   } catch (err) {
     console.error('[keypoints] speaker rewrite error:', err);
-  }
-}
-
-// ── On-demand verification of a single key point ───────────────────────────────
-
-async function verifyKeyPoint(id, claim, quote) {
-  try {
-    const dateCtx = pageDate ? `\nDate: ${pageDate}` : '';
-    const titleCtx = pageTitle ? `Event: "${pageTitle}"${dateCtx}\n\n` : '';
-    const quoteCtx = (quote && quote.trim()) ? `\nOriginal quote: "${quote}"` : '';
-    const userMsg = `${titleCtx}Evaluate ONLY this claim:\n${claim}${quoteCtx}`;
-
-    // Verification ALWAYS uses live web search (grounded) — a verdict from the model's
-    // own (possibly stale) knowledge is worse than none for a fact-checking tool, so
-    // there is NO ungrounded fallback. Run it SILENT and retry once if the search model
-    // errors transiently (e.g. Groq compound 413); if it still fails, we return no
-    // verdict and the card shows "No se pudo verificar."
-    let { text, sources } = await callClaude(userMsg, verifyPrompt(), true, 768, false, true);
-    let result = parseObject(text);
-    if (!result || !result.verdict) {
-      const retry = await callClaude(userMsg, verifyPrompt(), true, 768, false, true);
-      result = parseObject(retry.text);
-      sources = retry.sources;
-    }
-
-    if (activeTabId) {
-      sendToTab(activeTabId, {
-        type: 'KEYPOINT_VERDICT',
-        id,
-        result: result ? { ...result, sources: sources || [] } : null,
-      });
-    }
-  } catch (err) {
-    console.error('[verify] error:', err);
-    if (activeTabId) sendToTab(activeTabId, { type: 'KEYPOINT_VERDICT', id, result: null });
   }
 }
 
@@ -1155,6 +1133,110 @@ let dossierRefreshTimer = null;
 let dossierFirstLineAt = 0;
 let dossierTranscript = '';
 let searchLimitNoticed = false;
+let lastSearchAt = 0;
+
+// ── Loose ends: names that may be misheard ─────────────────────────────────────
+// Gladia heard "Ангкор" (Angkor) where the speaker said Anchorage, and the card, the
+// summary and a background line ("possibly in Cambodia") all built on it. The key-point
+// model now lists such names; each is looked up in the NEXT search that runs anyway (the
+// transcript one, the refresh), in at most LOOSE_END_EXTRA_MAX searches of their own
+// during the event, and in one last search at export for whatever is still open — that
+// one is not counted against the per-event cap (the monthly limit still applies). The
+// card only gets a warning: its text is never changed on the strength of a search.
+const LOOSE_END_EXTRA_MAX = 2;
+const LOOSE_END_WAIT_MS = 5 * 60 * 1000;   // open that long with no search → one of its own
+const LOOSE_END_MAX = 12;
+let looseEnds = [];        // { term, sentence, status: pending|found|confirmed|notfound|unchecked, likely, note }
+let looseEndExtraSearches = 0;
+let looseEndTimer = null;
+
+function pendingLooseEnds() {
+  return looseEnds.filter(x => x.status === 'pending');
+}
+
+function sendLooseEnds() {
+  if (activeTabId) sendToTab(activeTabId, { type: 'LOOSE_ENDS', items: looseEnds });
+}
+
+function noteLooseEnds(terms, quote) {
+  if (!Array.isArray(terms) || !quote) return;
+  const plain = s => String(s).toLowerCase().normalize('NFD').replace(/\p{M}/gu, '');
+  let added = false;
+  for (const raw of terms.slice(0, 2)) {
+    const term = String(raw || '').trim();
+    // Only a name the quote really contains: that is how the card finds its warning.
+    if (term.length < 3 || term.length > 60 || !plain(quote).includes(plain(term))) continue;
+    if (looseEnds.length >= LOOSE_END_MAX || looseEnds.some(x => sameName(x.term, term))) continue;
+    looseEnds.push({ term, sentence: String(quote).slice(0, 300), status: 'pending', likely: '', note: '' });
+    added = true;
+  }
+  if (!added) return;
+  console.log('[loose-ends] doubtful names:', pendingLooseEnds().map(x => x.term).join(', '));
+  sendLooseEnds();
+  if (!looseEndTimer) looseEndTimer = setTimeout(checkLooseEnds, LOOSE_END_WAIT_MS);
+}
+
+// No search has carried them for a while: one of their own, within the per-event cap.
+function checkLooseEnds() {
+  looseEndTimer = null;
+  if (!isCapturing || !pendingLooseEnds().length) return;
+  // The transcript search has not run yet: it will take them.
+  if (dossierSessionId !== sessionId) { looseEndTimer = setTimeout(checkLooseEnds, LOOSE_END_WAIT_MS); return; }
+  const idle = Date.now() - lastSearchAt;
+  if (idle < LOOSE_END_WAIT_MS) { looseEndTimer = setTimeout(checkLooseEnds, LOOSE_END_WAIT_MS - idle); return; }
+  if (looseEndExtraSearches >= LOOSE_END_EXTRA_MAX) return; // the export's search will take them
+  looseEndExtraSearches++;
+  searchLooseEnds(false).catch(err => console.warn('[loose-ends] error:', err.message));
+}
+
+function looseEndsBlock(items) {
+  return items.length
+    ? `Doubtful names (speech recognition may have misheard them):\n` + items.map(x => `- "${x.term}" in: "${x.sentence}"`).join('\n')
+    : '';
+}
+
+function looseEndsRule() {
+  const L = promptLang();
+  return `"terms": one entry per doubtful name listed in the request, [] if none is listed: {"heard": "<the name as listed>", "likely": "<what the speaker most likely said, as reliable sources write it — the same name if the results show it is right — or "" if the results do not show it>", "note": "<a few words in ${L.name.toUpperCase()} on what it is, from the results; "" if not found>"}. Only what the search results support: never guess.`;
+}
+
+function looseEndsPrompt() {
+  return `You help a journalist following a live event. The request lists names from its automatic transcript that may be misheard, each with the sentence it was said in. Search the web — ONE search, two at most — to find what the speaker most likely meant, using ONLY what the results say.
+
+Return ONLY a JSON object (no markdown, no text outside it): {"terms": [...]}, where ${looseEndsRule()}`;
+}
+
+// The search's answer for the names it was sent; whatever it does not answer is not found.
+function resolveLooseEnds(sent, terms) {
+  if (!sent.length) return;
+  const answers = Array.isArray(terms) ? terms : [];
+  for (const item of sent) {
+    const a = answers.find(x => x && typeof x.heard === 'string' && sameName(x.heard, item.term));
+    const likely = a && typeof a.likely === 'string' ? a.likely.trim() : '';
+    item.note = a && typeof a.note === 'string' ? stripMarkdown(a.note.trim()).slice(0, 160) : '';
+    item.likely = likely;
+    item.status = !likely ? 'notfound' : sameName(likely, item.term) ? 'confirmed' : 'found';
+  }
+  console.log('[loose-ends] resolved:', sent.map(x => `${x.term} → ${x.status}${x.likely ? ' (' + x.likely + ')' : ''}`).join('; '));
+  sendLooseEnds();
+}
+
+// `final`: the export's last search — runs whatever the per-event cap, and marks what it
+// could not look up as unchecked so the report says so.
+async function searchLooseEnds(final) {
+  const sent = pendingLooseEnds();
+  if (!sent.length) return;
+  const parts = [`Page: "${pageTitle || ''}"`, `Date and time: ${clockDateTime(sessionStartedAt || Date.now())}`];
+  if (PARTICIPANTS) parts.push(`Participants: ${PARTICIPANTS}`);
+  parts.push(looseEndsBlock(sent));
+  const data = await webSearch(parts.join('\n'), looseEndsPrompt());
+  if (!data || !data.searches) {
+    if (final) { sent.forEach(x => { x.status = 'unchecked'; }); sendLooseEnds(); }
+    return;
+  }
+  const obj = parseObject(data.text || '');
+  resolveLooseEnds(sent, obj && obj.terms);
+}
 
 function resetDossier() {
   dossier = null;
@@ -1164,7 +1246,13 @@ function resetDossier() {
   dossierFirstLineAt = 0;
   dossierTranscript = '';
   backgroundLinesShown = [];
+  speakersSeen = [];
   searchLimitNoticed = false;
+  lastSearchAt = 0;
+  looseEnds = [];
+  looseEndExtraSearches = 0;
+  clearTimeout(looseEndTimer);
+  looseEndTimer = null;
   clearTimeout(dossierRefreshTimer);
   dossierRefreshTimer = null;
 }
@@ -1186,7 +1274,8 @@ Return ONLY a JSON object (no markdown, no text outside it):
 
 - "names": the people who speak or are mentioned, at most 12, spelled exactly as reliable sources write them in Latin script — this is how a misheard name gets corrected, so include those you are sure the transcript means.
 - "background": at most 120 words of plain neutral prose: the recent facts behind what is being discussed, with dates. Skip what any reader knows (who the president is). No opinions, no predictions.
-- If the results say nothing useful about this event, return {"names": [], "background": ""}.`;
+- If the results say nothing useful about this event, return {"names": [], "background": ""}.
+- ${looseEndsRule()} Add it to the JSON object.`;
 }
 
 function monthKey() {
@@ -1210,7 +1299,7 @@ async function addWebSearches(n) {
 
 // One call to the proxy's /search. Returns its answer, or null when off, over the limit,
 // or failed. Never throws: a dossier is a bonus, the session must not depend on it.
-async function webSearch(query) {
+async function webSearch(query, instructions) {
   if (!PROXY_URL) return null;
   const { limit, used } = await webSearchBudget();
   if (limit <= 0) return null;
@@ -1228,7 +1317,7 @@ async function webSearch(query) {
     const res = await fetch(new URL('/search', PROXY_URL).href, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ query, instructions: dossierPrompt(), limit, max_tokens: 1500 }),
+      body: JSON.stringify({ query, instructions: instructions || dossierPrompt(), limit, max_tokens: 1500 }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.error) {
@@ -1236,6 +1325,7 @@ async function webSearch(query) {
       return null;
     }
     await addWebSearches(data.searches || 0);
+    if (data.searches) lastSearchAt = Date.now();
     return data;
   } catch (err) {
     console.warn('[dossier] search threw:', err.message);
@@ -1250,21 +1340,26 @@ function dossierQuery(topics) {
   if (PARTICIPANTS) parts.push(`Participants: ${PARTICIPANTS}`);
   if (topics && topics.length) parts.push(`Key points so far:\n- ${topics.join('\n- ')}`);
   else if (dossierTranscript) parts.push(`Transcript of the first minutes:\n"${dossierTranscript}"`);
+  const doubtful = looseEndsBlock(pendingLooseEnds());
+  if (doubtful) parts.push(doubtful);
   return parts.join('\n');
 }
 
 // Builds (or, with topics, refreshes) the dossier. Only an answer that really searched
 // counts: without a search it would be the model's own frozen knowledge in disguise.
 async function buildDossier(topics) {
+  const sentLooseEnds = pendingLooseEnds();
   const data = await webSearch(dossierQuery(topics));
   if (!data || !data.searches) {
     if (data) console.warn('[dossier] the model answered without searching — discarded');
     return;
   }
   const obj = parseObject(data.text || '');
+  resolveLooseEnds(sentLooseEnds, obj && obj.terms);
   const names = (obj && Array.isArray(obj.names) ? obj.names : [])
     .filter(n => n && typeof n.name === 'string' && n.name.trim())
     .map(n => ({ name: n.name.trim(), role: typeof n.role === 'string' ? n.role.trim() : '' }))
+    .filter((n, i, all) => all.findIndex(m => sameName(m.name, n.name)) === i)
     .slice(0, 12);
   const background = obj && typeof obj.background === 'string' ? stripMarkdown(obj.background.trim()) : '';
   if (!names.length && !background) {
@@ -1273,7 +1368,7 @@ async function buildDossier(topics) {
   }
   const prev = dossier;
   // A refresh adds to the first dossier rather than replacing who-is-who already known.
-  const merged = prev ? [...prev.names, ...names.filter(n => !prev.names.some(p => p.name.toLowerCase() === n.name.toLowerCase()))] : names;
+  const merged = prev ? [...prev.names, ...names.filter(n => !prev.names.some(p => sameName(p.name, n.name)))] : names;
   const sources = prev ? [...prev.sources, ...data.sources.filter(s => !prev.sources.some(p => p.url === s.url))] : data.sources;
   dossier = {
     names: merged.slice(0, 16),
@@ -1323,7 +1418,7 @@ async function vocabularyNames() {
   }
   const names = PARTICIPANTS ? PARTICIPANTS.split(',').map(s => s.trim()).filter(Boolean) : [];
   for (const n of (dossier ? dossier.names : [])) {
-    if (!names.some(x => x.toLowerCase() === n.name.toLowerCase())) names.push(n.name);
+    if (!names.some(x => sameName(x, n.name))) names.push(n.name);
   }
   return names.slice(0, VOCABULARY_MAX);
 }
@@ -1336,7 +1431,33 @@ const BACKGROUND_LINE_MAX = 220;
 // the United States" on five of its seven cards. So a line that says what an earlier card
 // already said (mostly the same words) is dropped here.
 const BACKGROUND_REPEAT_OVERLAP = 0.6;
+// A guess is worse than nothing: a misheard "Anchorage" got "possibly in Cambodia". The
+// prompt forbids guessing; this drops a line that guesses anyway.
+const BACKGROUND_GUESS = /(^|[^\p{L}])(posiblemente|probablemente|quizás?|tal vez|podría (referirse|tratarse|ser)|possibly|probably|perhaps|likely|may refer|might (refer|be))(?![\p{L}])/iu;
 let backgroundLinesShown = [];
+
+// "Vladímir Putin" and "Vladimir Putin" are one person: the search wrote the first, the
+// model the second, and the export showed both. Names compare without accents or case.
+function sameName(a, b) {
+  const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/\p{M}/gu, '').replace(/\s+/g, ' ').trim();
+  return norm(a) === norm(b);
+}
+
+// A card's speaker in the spelling already in use: his Participants first, then the
+// search's names, then whatever earlier cards used.
+let speakersSeen = [];
+function canonicalSpeaker(name) {
+  if (!name) return name;
+  const known = [
+    ...(PARTICIPANTS ? PARTICIPANTS.split(',').map(x => x.trim()).filter(Boolean) : []),
+    ...(dossier ? dossier.names.map(n => n.name) : []),
+    ...speakersSeen,
+  ];
+  const match = known.find(k => sameName(k, name));
+  if (match) return match;
+  speakersSeen.push(name);
+  return name;
+}
 
 function backgroundWords(s) {
   return new Set(s.toLowerCase().normalize('NFD').replace(/\p{M}/gu, '')
@@ -1346,6 +1467,7 @@ function backgroundWords(s) {
 function backgroundLine(text) {
   let s = stripMarkdown(typeof text === 'string' ? text : '').replace(/\s+/g, ' ').trim();
   if (!s) return '';
+  if (BACKGROUND_GUESS.test(s)) { console.log('[keypoints] background line is a guess — dropped:', s); return ''; }
   const words = backgroundWords(s);
   const repeats = backgroundLinesShown.some(prev => {
     const hits = [...words].filter(w => prev.has(w)).length;
@@ -1356,6 +1478,26 @@ function backgroundLine(text) {
   if (s.length <= BACKGROUND_LINE_MAX) return s;
   const cut = s.slice(0, BACKGROUND_LINE_MAX);
   return cut.slice(0, Math.max(cut.lastIndexOf(' '), BACKGROUND_LINE_MAX / 2)) + '…';
+}
+
+// Where a background line came from, decided in code: most lines of a Russian event
+// (Donetsk, Rosatom, Yalta) were the model's own knowledge, not the search, yet showed
+// as web context. A line whose words — those the point itself does not already give —
+// are mostly in the dossier came from the search ('search'); otherwise 'ai'. Measured on
+// that event's 20 lines: search lines scored 0.80–1.00, the others 0.50 or less.
+const CONTEXT_FROM_SEARCH = 0.6;
+
+function contextOrigin(line, point, quote) {
+  if (!line || !dossier) return '';
+  const known = backgroundWords([
+    ...dossier.names.map(n => n.name + ' ' + (n.role || '')), dossier.background || '',
+  ].join(' '));
+  const given = backgroundWords((point || '') + ' ' + (quote || ''));
+  const all = [...backgroundWords(line)];
+  const fresh = all.filter(w => !given.has(w));
+  const words = fresh.length ? fresh : all;
+  if (!words.length) return 'ai';
+  return words.filter(w => known.has(w)).length / words.length >= CONTEXT_FROM_SEARCH ? 'search' : 'ai';
 }
 
 // The dossier as a prompt block, kept apart from the transcript and labelled as such.
@@ -1487,6 +1629,43 @@ function notifyTranslator(label) {
 // try, the AI is never called — so no request quota is spent on lines that didn't need it.
 // `shouldStop()` (optional) ends the work early once a better translation arrived
 // elsewhere (Gladia's): no more retries, no AI call, and it doesn't count as a failure.
+// The export's full sentences: Gladia cuts a speaker who pauses into several lines and
+// translates each piece alone. Joined back into sentences, Google gets them in a few
+// requests, one sentence per line of text (it keeps line breaks; measured on a Russian
+// export: 50 sentences in 11 requests, all 200). Stops at the first failure — never more
+// traffic against a throttled endpoint — and returns '' for what it could not translate.
+const EXPORT_BATCH_CHARS = 1800;   // ~10 KB of URL once Cyrillic is percent-encoded
+const EXPORT_BATCH_GAP_MS = 700;
+
+async function translateForExport(texts) {
+  const out = texts.map(() => '');
+  if (!Array.isArray(texts) || !texts.length || Date.now() < googlePausedUntil) return out;
+  const target = getUiLang();
+  const batches = [];
+  let current = [], size = 0;
+  texts.forEach((text, i) => {
+    const one = String(text || '').replace(/\s+/g, ' ').trim();
+    if (current.length && size + one.length > EXPORT_BATCH_CHARS) { batches.push(current); current = []; size = 0; }
+    current.push({ i, text: one });
+    size += one.length + 1;
+  });
+  if (current.length) batches.push(current);
+  for (let b = 0; b < batches.length; b++) {
+    if (b) await new Promise(r => setTimeout(r, EXPORT_BATCH_GAP_MS));
+    try {
+      const { translated } = await translateWithGoogle(batches[b].map(x => x.text).join('\n'), target);
+      const parts = translated.split('\n');
+      // A batch that comes back with a different number of lines can't be matched safely.
+      if (parts.length !== batches[b].length) { console.warn('[export] Google merged or split lines — batch skipped'); continue; }
+      batches[b].forEach((x, k) => { out[x.i] = parts[k].trim(); });
+    } catch (err) {
+      console.warn('[export] Google translation stopped:', err.message);
+      break;
+    }
+  }
+  return out;
+}
+
 async function translateLine(text, report, sourceCode, shouldStop) {
   if (!text || !text.trim()) return;
   const stopped = () => !!(shouldStop && shouldStop());
@@ -1652,6 +1831,30 @@ function looksUntranslated(original, translation) {
 
 const COPIED_RUN_WORDS = 6;
 
+// Gladia sometimes says one sentence twice and leaves another out: in a Russian session
+// 18 of 248 lines did ("Y, por cierto, también lo he dicho…" twice, and the sentence about
+// Ukraine's declaration of neutrality gone). The repeat is the visible sign of the loss.
+// A speaker who really repeats himself is not flagged: the original repeats too.
+// Measured on 12 older exports (249 translated lines): no false alarm.
+function repeatsInsteadOfTranslating(original, translation) {
+  return hasRepeatedSentence(translation) && !hasRepeatedSentence(original);
+}
+
+function hasRepeatedSentence(text) {
+  const words = s => s.toLowerCase().normalize('NFD').replace(/\p{M}/gu, '')
+    .split(/[^\p{L}\p{N}]+/u).filter(w => w.length >= 3);
+  const sentences = String(text || '').split(/(?<=[.!?…])\s+/u)
+    .map(x => new Set(words(x))).filter(x => x.size >= 2);
+  for (let i = 0; i < sentences.length; i++) {
+    for (let j = i + 1; j < sentences.length; j++) {
+      const a = sentences[i], b = sentences[j];
+      const hits = [...a].filter(w => b.has(w)).length;
+      if (hits >= 2 && hits / Math.min(a.size, b.size) >= 0.6) return true;
+    }
+  }
+  return false;
+}
+
 // Longest run of consecutive words present, in the same order, in both texts.
 function longestCopiedRun(original, translation) {
   const words = s => String(s || '').toLowerCase().normalize('NFD').replace(/\p{M}/gu, '')
@@ -1675,13 +1878,13 @@ function longestCopiedRun(original, translation) {
 function applyGladiaTranslation(line, tr, method) {
   // Its original lost its "The Press" labels; the translation carries them translated.
   if (line.hadLabels) tr = { ...tr, text: tidySpaces(tr.text.replace(PRESS_LABEL_TR_RE, '$1')) };
-  const untranslated = line.needs && looksUntranslated(line.text, tr.text);
+  const untranslated = line.needs && (looksUntranslated(line.text, tr.text) || repeatsInsteadOfTranslating(line.text, tr.text));
   // Even a line he understands feeds the interpretation index: its Spanish is what a later
   // interpreted line gets compared against (and vice versa). Nothing of this is shown.
   if (!untranslated) indexSpokenLine(line.timecode, line.language, tr.text);
   console.log(`[translate] gladia matched by ${method}, ${Date.now() - line.at} ms after its line` +
     (!line.needs ? ' (line needs no translation: ignored)'
-      : untranslated ? ' — came back UNTRANSLATED, the fallbacks take over' : ''));
+      : untranslated ? ' — came back UNTRANSLATED or with a sentence twice, the fallbacks take over' : ''));
   if (untranslated) {
     line.gladiaRejected = true;
     if (line.startFallback) line.startFallback();
@@ -2083,13 +2286,18 @@ browser.runtime.onMessage.addListener((msg, sender) => {
       return Promise.resolve({ granted: true });
     }
 
-    case 'VERIFY_KEYPOINT':
-      verifyKeyPoint(msg.id, msg.claim, msg.quote);
-      return Promise.resolve();
-
     case 'FEEDBACK_NEGATIVE':
       addFeedback('neg', msg.text);
       return Promise.resolve();
+
+    case 'TRANSLATE_FOR_EXPORT':
+      return translateForExport(msg.texts);
+
+    // The export's last search for names still open; answers the whole list. After a
+    // Stop the list here is gone (resetDossier), so the page sends its own copy.
+    case 'RESOLVE_LOOSE_ENDS':
+      if (!looseEnds.length && Array.isArray(msg.items)) looseEnds = msg.items.map(x => ({ ...x }));
+      return searchLooseEnds(true).catch(() => {}).then(() => looseEnds);
 
     case 'REWRITE_KEYPOINT_SPEAKER':
       rewriteKeyPointSpeaker(msg);

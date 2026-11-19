@@ -572,6 +572,15 @@
   line-height: 1.45;
   margin-top: 4px;
 }
+/* The AI's own knowledge: grey instead of teal, readable on the dark card. */
+.rtfc-kp-context--ai { color: #cbd5e1; }
+/* A name that may be misheard: amber, a warning about the transcript, not content. */
+.rtfc-kp-unclear {
+  font-size: 11px;
+  color: #fbbf24;
+  line-height: 1.45;
+  margin-top: 4px;
+}
 
 .rtfc-summary-sources {
   margin-top: 8px;
@@ -627,21 +636,6 @@
 }
 #rtfc-interesting:hover { background: #374151; }
 
-.rtfc-verify-btn {
-  background: rgba(255,255,255,0.06);
-  color: #cbd5e1;
-  border: 0.5px solid rgba(255,255,255,0.12);
-  border-radius: 6px;
-  font-family: 'Inter', sans-serif;
-  font-size: 10px;
-  font-weight: 600;
-  padding: 4px 10px;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
-.rtfc-verify-btn:hover:not(:disabled) { background: rgba(255,255,255,0.12); color: #fff; }
-.rtfc-verify-btn:disabled { opacity: 0.6; cursor: default; }
-
 /* 👍 reinforce + ✏️ correct — same chip look as 👎, neutral hover */
 .rtfc-reinforce-btn,
 .rtfc-edit-btn {
@@ -693,8 +687,6 @@
 .rtfc-kp-edit-save:hover { background: #0fa2b0; }
 .rtfc-kp-edit-cancel { background: rgba(255,255,255,0.06); color: #cbd5e1; }
 .rtfc-kp-edit-cancel:hover { background: rgba(255,255,255,0.14); }
-
-.rtfc-kp-noverdict { font-size: 10px; color: #888; font-style: italic; }
 
 /* ── Participants bar (top of panel) ── */
 #rtfc-participants {
@@ -751,24 +743,6 @@
 }
 .rtfc-part-input::placeholder { color: #777; }
 .rtfc-part-input:focus { border-color: rgba(165,180,252,0.5); }
-
-.rtfc-kp-verdict {
-  margin-top: 4px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: rgba(255,255,255,0.04);
-  border: 0.5px solid rgba(255,255,255,0.08);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  animation: rtfc-in 0.18s ease;
-}
-
-.rtfc-kp-verdict-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
 
 .rtfc-claim {
   font-size: 11.5px;

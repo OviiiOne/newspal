@@ -378,7 +378,7 @@ function createPanel() {
 
   panel.querySelector('#rtfc-close').addEventListener('click', () => requestCloseSession());
 
-  panel.querySelector('#rtfc-export').addEventListener('click', () => exportPDF());
+  panel.querySelector('#rtfc-export').addEventListener('click', () => { exportPDF(); });
   panel.querySelector('#rtfc-summary-btn').addEventListener('click', () => generateSummary());
 
   setupInterestingButton();
@@ -482,7 +482,7 @@ function showCloseConfirm() {
       switch (btn.dataset.act) {
         case 'cancel':  dismissCloseConfirm(); break;
         case 'discard': closeSession(); break;
-        case 'export':  exportPDF(); closeSession(); break;
+        case 'export':  exportPDF().finally(closeSession); break;
         case 'summary': startCloseWithSummary(); break;
       }
     });
@@ -495,7 +495,7 @@ function showCloseConfirm() {
 function startCloseWithSummary() {
   if (!closeConfirmEl) return;
   const already = (typeof sessionSummary === 'string') ? sessionSummary.trim() : '';
-  if (already) { exportPDF(); closeSession(); return; }
+  if (already) { exportPDF().finally(closeSession); return; }
 
   closeConfirmEl.querySelectorAll('.rtfc-confirm-btn').forEach(b => {
     if (b.dataset.act !== 'cancel') b.disabled = true;
@@ -510,8 +510,7 @@ function startCloseWithSummary() {
 function finishCloseWithSummary() {
   if (!closeAfterSummary) return;
   closeAfterSummary = false;
-  exportPDF();
-  closeSession();
+  exportPDF().finally(closeSession);
 }
 
 // ── Transcript ────────────────────────────────────────────────────────────────
@@ -881,11 +880,13 @@ function buildKeyPointCard(kp) {
   const quoteHTML = kp.quote
     ? '<p class="rtfc-kp-quote">“' + escapeHtml(kp.quote) + '”</p>'
     : '';
-  // Background from the web dossier: on its own line and marked, so it never reads as
-  // something the speaker said.
+  // Background: on its own line and marked — 🌐 from the web search, 🧠 the AI's own
+  // knowledge — so it never reads as something the speaker said.
+  const ctx = contextLabel(kp.contextSource);
   const contextHTML = kp.context
-    ? '<p class="rtfc-kp-context" title="' + escapeHtml(t('ov_kp_context_title')) + '">🌐 ' +
-      escapeHtml(t('ov_kp_context')) + ': ' + escapeHtml(kp.context) + '</p>'
+    ? '<p class="rtfc-kp-context' + (kp.contextSource === 'ai' ? ' rtfc-kp-context--ai' : '') +
+      '" title="' + escapeHtml(ctx.title) + '">' + ctx.icon + ' ' +
+      escapeHtml(ctx.label) + ': ' + escapeHtml(kp.context) + '</p>'
     : '';
 
   // The exact model is on hover: the card has no room, but it answers "which Mistral?".
@@ -904,10 +905,8 @@ function buildKeyPointCard(kp) {
     '<p class="rtfc-kp-point">' + escapeHtml(kp.point) + '</p>',
     quoteHTML,
     contextHTML,
+    '<div class="rtfc-kp-unclear-box"></div>',
     '<div class="rtfc-kp-actions">',
-      // Verification needs live web search, which doesn't work on the Groq free tier
-      // (returns 413). Disabled for now; re-enable when a search-capable provider is set.
-      '<button class="rtfc-verify-btn" disabled title="' + escapeHtml(t('ov_verify_disabled_title')) + '">' + escapeHtml(t('ov_verify')) + '</button>',
       '<button class="rtfc-reinforce-btn" title="' + escapeHtml(t('ov_reinforce_title')) + '">👍</button>',
       '<button class="rtfc-edit-btn" title="' + escapeHtml(t('ov_edit_title')) + '">✏️</button>',
       '<button class="rtfc-discard-btn" title="' + escapeHtml(t('ov_discard_title')) + '">👎</button>',
@@ -917,18 +916,7 @@ function buildKeyPointCard(kp) {
 
   const speakerTagEl = card.querySelector('.rtfc-speaker-tag');
   if (speakerTagEl) speakerTagEl.addEventListener('click', () => editKeyPointSpeaker(card, kp));
-
-  const btn = card.querySelector('.rtfc-verify-btn');
-  if (btn && !btn.disabled) btn.addEventListener('click', () => {
-    btn.disabled = true;
-    btn.textContent = t('ov_verifying');
-    browser.runtime.sendMessage({
-      type: 'VERIFY_KEYPOINT',
-      id: kp._id,
-      claim: kp.point,
-      quote: kp.quote || '',
-    });
-  });
+  renderLooseEnds(card);
 
   const discardBtn = card.querySelector('.rtfc-discard-btn');
   if (discardBtn) discardBtn.addEventListener('click', () => {
@@ -1056,6 +1044,19 @@ function editKeyPointSpeaker(card, kp) {
   cancel.addEventListener('click', close);
 }
 
+// Doubtful names (misheard?) under the card whose quote contains them. A warning only:
+// the card's text is never changed on the strength of a search.
+let looseEndItems = [];
+
+function renderLooseEnds(card) {
+  const box = card && card.querySelector('.rtfc-kp-unclear-box');
+  const kp = card && card._kpData;
+  if (!box || !kp) return;
+  box.innerHTML = looseEndsFor((kp.quote || '') + ' ' + (kp.point || ''), looseEndItems)
+    .map(x => '<p class="rtfc-kp-unclear" title="' + escapeHtml(t('ov_le_title')) + '">' + escapeHtml(looseEndText(x)) + '</p>')
+    .join('');
+}
+
 // Takes a card off the panel and out of the export and the summary.
 function dropKeyPointCard(card, kp) {
   kpCards.delete(kp._id);
@@ -1129,66 +1130,17 @@ function renderRestoredSession(data) {
       point: entry.point,
       quote: entry.quote || '',
       context: entry.context || '',
+      contextSource: entry.contextSource || '',
       speaker: entry.speaker || null,
       model: entry.model || '',
     };
     verdictListEl?.querySelector('.rtfc-empty')?.remove();
     verdictListEl?.prepend(buildKeyPointCard(kp));
-    if (entry.verdict) {
-      applyKeyPointVerdict(entry.id, {
-        verdict: entry.verdict,
-        confidence: entry.confidence || '',
-        explanation: entry.verdictExplanation || '',
-        sources: entry.sources || [],
-      });
-    }
   });
 
+  looseEndItems = Array.isArray(data.looseEnds) ? data.looseEnds : [];
+  kpCards.forEach(card => renderLooseEnds(card));
   if (data.summary) renderSummary(data.summary, '', '', data.summarySources || [], true);
-}
-
-function applyKeyPointVerdict(id, result) {
-  const card = kpCards.get(id);
-  if (!card) return;
-  const actions = card.querySelector('.rtfc-kp-actions');
-
-  if (!result || !result.verdict) {
-    // Re-enable the button so the user can retry, and show the reason beside it
-    // (don't destroy the actions, or there'd be nothing left to click).
-    const btn = card.querySelector('.rtfc-verify-btn');
-    if (btn) { btn.disabled = false; btn.textContent = t('ov_verify'); }
-    let note = card.querySelector('.rtfc-kp-noverdict');
-    if (!note) {
-      note = document.createElement('span');
-      note.className = 'rtfc-kp-noverdict';
-      if (actions) actions.insertAdjacentElement('afterend', note); else card.appendChild(note);
-    }
-    note.textContent = t('ov_no_verdict');
-    return;
-  }
-
-  const color = colorForVerdict(result.verdict, result.confidence);
-  const label = verdictLabel(result.verdict);
-  const conf = result.confidence ? confLabel(result.confidence) : '';
-  const sourcesHTML = (result.sources ?? []).map((url, i) =>
-    (url.startsWith('http://') || url.startsWith('https://'))
-      ? '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener">' + escapeHtml(t('ov_source')) + ' ' + (i + 1) + '</a>'
-      : ''
-  ).join('');
-
-  const v = document.createElement('div');
-  v.className = 'rtfc-kp-verdict rtfc-verdict--' + color;
-  v.innerHTML = [
-    '<div class="rtfc-kp-verdict-head">',
-      '<span class="rtfc-badge rtfc-badge--' + color + '">' + escapeHtml(label) + '</span>',
-      conf ? '<span class="rtfc-confidence-right">' + escapeHtml(conf) + ' ' + escapeHtml(t('ov_confidence')) + '</span>' : '',
-    '</div>',
-    '<p class="rtfc-explanation">' + escapeHtml(result.explanation || '') + '</p>',
-    (sourcesHTML.trim() ? '<div class="rtfc-sources">' + sourcesHTML + '</div>' : ''),
-  ].join('');
-
-  if (actions) actions.replaceWith(v); else card.appendChild(v);
-  if (typeof updateKeyPointVerdict === 'function') updateKeyPointVerdict(id, result);
 }
 
 // ── What the page says about the event ────────────────────────────────────────
@@ -1770,18 +1722,31 @@ browser.runtime.onMessage.addListener((msg) => {
       break;
     }
 
+    // Re-read with its real speaker, it was not a key point (mostly a reporter's question).
+    // Same rule as the rewrite: if he touched the text meanwhile, his hand wins.
+    case 'KEYPOINT_NOT_NEWSWORTHY': {
+      const card = kpCards.get(msg.id);
+      if (!card || !card._kpData || card._kpData.point !== msg.previous || card._kpData.userEdited) break;
+      if (card.querySelector('.rtfc-kp-edit')) break;
+      dropKeyPointCard(card, card._kpData);
+      showError(t('ov_kp_dropped_after_speaker').replace('{name}', msg.speaker || ''), 'info');
+      break;
+    }
+
     case 'NEW_KEYPOINTS':
       if (msg.results) {
         for (const kp of msg.results) addKeyPoint(kp);
       }
       break;
 
-    case 'CAPTURE_READY':
-      setDotState('ready');
+    case 'LOOSE_ENDS':
+      looseEndItems = Array.isArray(msg.items) ? msg.items : [];
+      if (typeof setLooseEnds === 'function') setLooseEnds(looseEndItems);
+      kpCards.forEach(card => renderLooseEnds(card));
       break;
 
-    case 'KEYPOINT_VERDICT':
-      applyKeyPointVerdict(msg.id, msg.result);
+    case 'CAPTURE_READY':
+      setDotState('ready');
       break;
 
     case 'SUMMARY_RESULT':
