@@ -173,7 +173,7 @@ const REFERENCE_RULE = 'KEEP WHAT EACH STATEMENT REFERS TO: when a speaker compa
 // With a web dossier the key point may carry one line of background, which the card shows
 // apart from the point. It may come ONLY from that block — without one, no such field.
 function backgroundRule(L) {
-  return `\n\nBACKGROUND BLOCK: the request may include background from a web search. It was NOT said at the event. Use it ONLY to spell names and titles correctly and to understand what a speaker refers to — never as a source of key points or quotes. Add to each point a "context" field: ONE short sentence in ${L.name.toUpperCase()} that explains something IN THIS POINT a reader may not know. Take it from that block; only when the block says nothing about it, you may use well-established general knowledge of what a place, organisation, treaty or past event IS — never anything that may have changed recently (current offices, recent events, figures) — a person, place, decision or earlier event it mentions. NEVER say who the speaker is or what office they hold, nor anything a news reader already knows; never repeat a context given for an earlier point. It must explain a name or term written IN THIS POINT: a fact that is only about the same event or the same general subject is not context for it. NEVER GUESS: no "possibly", "probably", "perhaps" or "may refer to" — if the block does not say plainly what something is, or a word may have been misheard, give "". Most points need none: then "".`;
+  return `\n\nBACKGROUND BLOCK: the request may include background from a web search. It was NOT said at the event. Use it ONLY to spell names and titles correctly and to understand what a speaker refers to — never as a source of key points or quotes. Add to each point a "context" field: ONE short sentence in ${L.name.toUpperCase()} that explains something IN THIS POINT a reader may not know. Take it from that block; only when the block says nothing about it, you may use well-established general knowledge to say what a NAMED place, organisation, treaty, person or past event IS — never anything that may have changed recently (current offices, recent events, figures), never a definition of a common word or concept (GDP, a trade deficit, a data centre), never "this refers to…", and never something said at the event itself — a person, place, decision or earlier event it mentions. NEVER say who the speaker is or what office they hold, nor anything a news reader already knows; never repeat a context given for an earlier point. It must explain a name or term written IN THIS POINT: a fact that is only about the same event or the same general subject is not context for it. NEVER GUESS: no "possibly", "probably", "perhaps" or "may refer to" — if the block does not say plainly what something is, or a word may have been misheard, give "". Most points need none: then "".`;
 }
 
 function keypointsPrompt(withBackground) {
@@ -962,12 +962,12 @@ async function extractKeyPoints(contextText, title, lexicalSummary, lexicalSnaps
     if (activeTabId) {
       sendToTab(activeTabId, {
         type: 'NEW_KEYPOINTS',
-        results: valid.map(r => ({ r, context: background ? backgroundLine(r.context) : '' })).map(({ r, context }) => ({
+        results: valid.map(r => ({ r, ...(background ? keyPointContext(r.context, r.point, r.quote, contextText) : {}) })).map(({ r, context, contextSource }) => ({
           point: r.point,
           category: (r.category || promptLang().catOther).toUpperCase(),
           quote: r.quote || '',
-          context,
-          contextSource: contextOrigin(context, r.point, r.quote),
+          context: context || '',
+          contextSource: contextSource || '',
           speaker: canonicalSpeaker(dominantSpeaker
             || (r.speaker && !String(r.speaker).match(/^Speaker\s*\d+$/i) ? r.speaker : null)),
           dominantSpeakerId,
@@ -1005,9 +1005,11 @@ async function addManualKeyPoint(text, speaker, context, timecode) {
       manualKeypointPrompt(!!background), false, 512, true
     );
     const kp = parseObject(answer.text);
-    const context = (kp && kp.point && background) ? backgroundLine(kp.context) : '';
+    // Not `context`: that name is this function's parameter (the preceding transcript),
+    // and redeclaring it in this block made every ⭐ fail before the AI call (TDZ).
+    const bg = (kp && kp.point && background) ? keyPointContext(kp.context, kp.point, kp.quote || text, (context || '') + ' ' + text) : {};
     const result = (kp && kp.point)
-      ? { point: kp.point, category: (kp.category || catOther).toUpperCase(), quote: kp.quote || text, context, contextSource: contextOrigin(context, kp.point, kp.quote || text), speaker: canonicalSpeaker(spk || kp.speaker || null), dominantSpeakerId: null, model: activeProvider, modelId: answer.model, timecode: tc }
+      ? { point: kp.point, category: (kp.category || catOther).toUpperCase(), quote: kp.quote || text, context: bg.context || '', contextSource: bg.contextSource || '', speaker: canonicalSpeaker(spk || kp.speaker || null), dominantSpeakerId: null, model: activeProvider, modelId: answer.model, timecode: tc }
       : { point: text, category: catOther, quote: text, speaker: spk, dominantSpeakerId: null, model: activeProvider, modelId: answer.model, timecode: tc };
     rememberClaim(result.point);
     if (activeTabId) sendToTab(activeTabId, { type: 'NEW_KEYPOINTS', results: [result] });
@@ -1246,6 +1248,8 @@ function resetDossier() {
   dossierFirstLineAt = 0;
   dossierTranscript = '';
   backgroundLinesShown = [];
+  contextCardsSeen = 0;
+  aiContextLines = 0;
   speakersSeen = [];
   searchLimitNoticed = false;
   lastSearchAt = 0;
@@ -1433,7 +1437,7 @@ const BACKGROUND_LINE_MAX = 220;
 const BACKGROUND_REPEAT_OVERLAP = 0.6;
 // A guess is worse than nothing: a misheard "Anchorage" got "possibly in Cambodia". The
 // prompt forbids guessing; this drops a line that guesses anyway.
-const BACKGROUND_GUESS = /(^|[^\p{L}])(posiblemente|probablemente|quizás?|tal vez|podría (referirse|tratarse|ser)|possibly|probably|perhaps|likely|may refer|might (refer|be))(?![\p{L}])/iu;
+const BACKGROUND_GUESS = /(^|[^\p{L}])(posiblemente|probablemente|quizás?|tal vez|podría (referirse|tratarse|ser)|podría|puede que|possibly|probably|perhaps|likely|may refer|may be related|could be|might (refer|be))(?![\p{L}])/iu;
 let backgroundLinesShown = [];
 
 // "Vladímir Putin" and "Vladimir Putin" are one person: the search wrote the first, the
@@ -1498,6 +1502,35 @@ function contextOrigin(line, point, quote) {
   const words = fresh.length ? fresh : all;
   if (!words.length) return 'ai';
   return words.filter(w => known.has(w)).length / words.length >= CONTEXT_FROM_SEARCH ? 'search' : 'ai';
+}
+
+// A key point's background line and where it came from. Lines of the model's own
+// knowledge (🧠) are held back hard: opened up to it, a Trump briefing got 43 of them on
+// 58 cards, nearly all filler ("GDP measures…", "this refers to…") and two that repeated
+// what he had just said (a plant "built in 1906") as if it were background. So: no
+// "refers to", no figure already said in the transcript, and at most one 🧠 line for
+// every AI_CONTEXT_EVERY key points. Lines from the search are unaffected.
+const AI_CONTEXT_EVERY = 4;
+const AI_CONTEXT_FILLER = /(^|[^\p{L}])(se refiere|hace referencia|refers? to|this is a reference)(?![\p{L}])/iu;
+let contextCardsSeen = 0;
+let aiContextLines = 0;
+
+function keyPointContext(raw, point, quote, said) {
+  contextCardsSeen++;
+  const text = stripMarkdown(typeof raw === 'string' ? raw : '').replace(/\s+/g, ' ').trim();
+  if (!text) return { context: '', contextSource: '' };
+  const origin = contextOrigin(text, point, quote);
+  if (origin === 'ai') {
+    const saidNumbers = new Set(String(said || '').match(/\d{2,}/g) || []);
+    const why = AI_CONTEXT_FILLER.test(text) ? 'filler'
+      : (text.match(/\d{2,}/g) || []).some(n => saidNumbers.has(n)) ? 'repeats a figure said at the event'
+      : aiContextLines >= Math.ceil(contextCardsSeen / AI_CONTEXT_EVERY) ? 'over the cap'
+      : '';
+    if (why) { console.log(`[keypoints] AI-knowledge line dropped (${why}):`, text); return { context: '', contextSource: '' }; }
+  }
+  const context = backgroundLine(text);
+  if (context && origin === 'ai') aiContextLines++;
+  return { context, contextSource: context ? origin : '' };
 }
 
 // The dossier as a prompt block, kept apart from the transcript and labelled as such.
